@@ -1,0 +1,105 @@
+meta_data:
+  exp_name: "dc_smac_returns"
+  script_path: "run_scripts/train_dc.py"
+  num_workers: 1
+
+variables:
+  seed: [100]
+
+constants:
+  # misc
+  seed: 100
+  job_name: "{dataset}/h_{horizon}-hh_{history_horizon}-{model}-r_{returns_scale}-guidew_{condition_guidance_w}-retcond_{returns_condition}"
+  horizon: 4
+  returns_scale: 20  # High return value for conditioning
+  env_type: "smac"
+  n_agents: 3
+  use_action: True
+  discrete_action: True
+  residual_attn: True
+  decentralized_execution: False
+  use_zero_padding: False
+  pred_future_padding: True
+
+  # model - use DiffusionBackbone with returns conditioning
+  model: "models.DiffusionBackbone"
+  diffusion: "models.OfflineDiffusionRL"
+  share_inv: True
+  history_horizon: 20
+  n_diffusion_steps: 50
+  action_weight: 10
+  loss_weights: null
+  loss_discount: 1
+  dim_mults: [1, 2]
+  returns_condition: True  # Enable returns conditioning
+  predict_epsilon: True
+  dim: 64
+  hidden_dim: 128
+  condition_dropout: 0.1
+  condition_guidance_w: 1.2
+  train_only_inv: False
+  clip_denoised: True
+  renderer: "utils.SMACRenderer"
+
+  # VAE+Diffusion RL specific parameters
+  vae_latent_dim: 32
+  trajectory_latent_dim: 64
+  vae_weight: 1.0
+  
+  # DiffusionBackbone specific parameters
+  backbone_layers: 3
+  backbone_hidden_dim: 128
+  
+  # Offline RL parameters
+  conservative_weight: 0.1
+  awac_weight: 0.5
+  use_conservative_loss: true
+  use_behavior_cloning: true
+  bc_weight: 0.5
+
+  # dataset
+  loader: "datasets.VAESequenceDataset"
+  normalizer: "CDFNormalizer"
+  dataset: "3m-Medium"
+  max_n_episodes: 50000
+  preprocess_fns: []
+  use_padding: True
+  discount: 0.99
+  max_path_length: 60
+  termination_penalty: 0.0
+  include_returns: true  # Enable returns for conditioning
+  include_env_ts: true
+
+  # training
+  n_steps_per_epoch: 10000 
+  n_train_steps: 200000 
+  batch_size: 128  
+  learning_rate: 0.001
+  gradient_accumulate_every: 1
+  ema_decay: 0.99
+  log_freq: 1000
+  save_freq: 20000
+  sample_freq: 0 
+  n_saves: 2
+  save_parallel: False
+  n_reference: 1
+  save_checkpoints: True 
+
+  # eval - use VAE evaluator for returns conditioning
+  evaluator: "utils.VAEDiffusionEvaluator"
+  num_eval: 50
+  num_envs: 10
+  eval_freq: 20000
+  test_ret: 1.0
+
+  # Offline RL Trainer parameters
+  q_learning_freq: 10
+  target_update_freq: 1000
+  conservative_update_freq: 5
+  bc_update_freq: 2
+
+  # load checkpoint
+  continue_training: false
+
+  # Disable online RL for pure offline training
+  online_training: false 

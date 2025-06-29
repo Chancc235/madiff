@@ -1,0 +1,1 @@
+python run_experiment.py -e exp_specs/vae_diffusion_rl_quick_test.yaml -g 0
