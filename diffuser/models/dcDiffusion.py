@@ -448,6 +448,8 @@ class OfflineDiffusionRL(nn.Module):
             
             # Decode action latents to actions
             generated_actions = self.decode_actions(x)  # [batch, 1, n_agents, action_dim]
+            if self.discrete_action:
+                generated_actions = F.softmax(generated_actions, dim=-1)
         # Use appropriate loss based on action type
         if hasattr(self, 'discrete_action') and self.discrete_action:
             # For discrete actions, use cross entropy loss
@@ -534,10 +536,9 @@ class OfflineDiffusionRL(nn.Module):
                 
                 _, agent_next_actions_latents = self.conditional_sample(next_cond, agent_idx=agent_idx, return_diffusion=True, verbose=False)
                 next_actions_latents_list.append(agent_next_actions_latents.squeeze(1))
-            
+
             # Concatenate actions and average pool conditions
-            next_actions_latents = torch.stack(next_actions_latents_list, dim=1).view(batch_size, -1)
-            next_actions_latents_flat = next_actions_latents.view(batch_size, -1)
+            next_actions_latents_flat = torch.stack(next_actions_latents_list, dim=1).view(batch_size, -1)
             next_trajectory_condition = torch.stack(next_conditions_list, dim=1).view(batch_size, -1)
             
             next_q_input = torch.cat([next_obs_flat, next_actions_latents_flat, next_trajectory_condition], dim=1)
@@ -552,7 +553,7 @@ class OfflineDiffusionRL(nn.Module):
         q_loss = F.mse_loss(q_current, target_q)
         return q_loss 
 
-    def policy_optimization_loss(self, obs, history_trajectory, agent_idx=None):
+    def policy_optimization_loss(self, obs, actions, history_trajectory, agent_idx=None):
         """Policy optimization loss: maximize Q(s, π(s))"""
         
         batch_size = obs.shape[0]
@@ -568,7 +569,7 @@ class OfflineDiffusionRL(nn.Module):
         if self.decentralized:
             # Collect all agent actions first
             all_agent_actions_latents = []
-            
+            agent_actions_list = []
             for agent_i in range(self.n_agents):
                 # Generate actions using current policy with gradients enabled
                 with torch.enable_grad():
@@ -576,12 +577,23 @@ class OfflineDiffusionRL(nn.Module):
 
                     cond = {"history_trajectory": history_trajectory}
 
-                    _, agent_actions_latents = self.conditional_sample(cond, agent_idx=agent_i, return_diffusion=True)
+                    agent_actions, agent_actions_latents = self.conditional_sample(cond, agent_idx=agent_i, return_diffusion=True)
+                    if self.discrete_action:
+                        agent_actions = F.softmax(agent_actions, dim=-1)
+                    agent_actions_list.append(agent_actions)
                     all_agent_actions_latents.append(agent_actions_latents)
             
             # Concatenate all agent actions: [batch, n_agents, action_latent_dim]
-            policy_actions_latents = torch.cat(all_agent_actions_latents, dim=1)
+            policy_actions_latents = torch.stack(all_agent_actions_latents, dim=1)
+            policy_actions = torch.stack(agent_actions_list, dim=1)
+            batch_indices = torch.arange(batch_size, device=device).unsqueeze(1).expand(-1, self.n_agents)
+            agent_indices = torch.arange(self.n_agents, device=device).unsqueeze(0).expand(batch_size, -1)
             
+            
+            # Extract the probability values for the actual actions
+            action_probs = policy_actions[batch_indices, agent_indices, actions.squeeze(-1).long()]  # [batch, n_agents]
+            log_action_probs = torch.log(action_probs + 1e-8)  # Add small epsilon to avoid log(0)
+
             # Flatten for Q-function input  
             obs_flat = obs_last.view(batch_size, -1)
             actions_latents_flat = policy_actions_latents.view(batch_size, -1)
@@ -598,7 +610,7 @@ class OfflineDiffusionRL(nn.Module):
             q_value = self.q_function(q_input)
                 
             # Policy loss: negative Q-value (we want to maximize Q, so minimize -Q)
-            policy_loss = -q_value.mean()
+            policy_loss = -(q_value.expand_as(log_action_probs) * log_action_probs).mean()
 
         return policy_loss
 
@@ -666,7 +678,6 @@ class OfflineDiffusionRL(nn.Module):
         # Initialize total loss
         total_loss = diffusion_loss + self.vae_weight * vae_loss
         
-        
         if self.use_behavior_cloning:
             if self.decentralized and agent_idx is not None:
                 bc_loss = self.behavioral_cloning_loss(observations, single_agent_actions, trajectory_condition)
@@ -674,18 +685,6 @@ class OfflineDiffusionRL(nn.Module):
                 bc_loss = self.behavioral_cloning_loss(observations, actions, trajectory_condition)
             total_loss += self.bc_weight * bc_loss
             info["bc_loss"] = bc_loss
-        
-        # Q-learning loss if we have next states and rewards
-        if next_observations is not None and rewards is not None and dones is not None:
-            # Q-learning and policy losses are computed separately in dedicated functions
-            # to ensure they are computed for all agents together even in decentralized mode
-            q_loss = torch.tensor(0.0, device=x.device)
-            policy_loss = torch.tensor(0.0, device=x.device)
-            info["q_loss"] = q_loss
-            info["policy_loss"] = policy_loss
-        else:
-            info["q_loss"] = torch.tensor(0.0, device=x.device)
-            info["policy_loss"] = torch.tensor(0.0, device=x.device)
         
         info.update({
             "diffusion_loss": diffusion_loss,
@@ -786,7 +785,8 @@ class OfflineDiffusionRL(nn.Module):
             # VAE forward pass
             action_latents, mu, log_var = self.encode_actions(actions)
             reconstructed_actions = self.decode_actions(action_latents)
-            
+            if self.discrete_action:
+                reconstructed_actions = F.softmax(reconstructed_actions, dim=-1)
             # Compute VAE loss
             recon_loss, kl_loss = self.vae_loss(actions, mu, log_var)
             vae_loss = recon_loss + 0.1 * kl_loss
@@ -826,37 +826,19 @@ class OfflineDiffusionRL(nn.Module):
         info = {}
         
         if next_observations is not None and rewards is not None and dones is not None:
-            # Extract last timestep data for Q-function
-            if len(next_observations.shape) == 4:  # [batch, horizon, n_agents, obs_dim]
-                next_obs_last = next_observations[:, -1]  # [batch, n_agents, obs_dim]
-            else:
-                next_obs_last = next_observations
+            next_obs_last = next_observations[:, -1]
                 
-            if len(rewards.shape) == 4:  # [batch, horizon, n_agents, 1]
-                rewards_last = rewards[:, -1]  # [batch, n_agents, 1]
-            elif len(rewards.shape) == 3:  # [batch, horizon, n_agents]
-                rewards_last = rewards[:, -1]  # [batch, n_agents]
-            else:
-                rewards_last = rewards
-                
-            if len(dones.shape) == 4:  # [batch, horizon, n_agents, 1]
-                dones_last = dones[:, -1]  # [batch, n_agents, 1]
-            elif len(dones.shape) == 3:  # [batch, horizon, n_agents]
-                dones_last = dones[:, -1]  # [batch, n_agents]
-            else:
-                dones_last = dones
-            
-            # Extract actions for last timestep
-            if len(actions.shape) == 4:  # [batch, horizon, n_agents, action_dim]
-                actions_last = actions[:, -1]  # [batch, n_agents, action_dim]
-            else:
-                actions_last = actions
-            
+            rewards_last = rewards[:, -1]  # [batch, n_agents, 1]
+
+            dones_last = dones[:, -1]  # [batch, n_agents, 1]
+
+            actions_last = actions[:, -1]  # [batch, n_agents, action_dim]
+
             # Compute Q-learning loss for all agents (centralized)
             q_loss = self.q_learning_loss(obs_last, actions_last, rewards_last, next_obs_last, dones_last, history_trajectory)
             
             # Compute policy optimization loss for all agents (centralized)
-            policy_loss = self.policy_optimization_loss(obs_last, history_trajectory)
+            policy_loss = self.policy_optimization_loss(obs_last, actions_last, history_trajectory)
             
             info["q_loss"] = q_loss
             info["policy_loss"] = policy_loss

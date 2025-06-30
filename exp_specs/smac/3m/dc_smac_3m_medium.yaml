@@ -4,12 +4,15 @@ meta_data:
   num_workers: 1
 
 variables:
-  seed: [1001]
-
 constants:
+  vae_weight: 0.2
+  bc_weight: 4.0
+  q_weight: 0.1  # Weight for Q-learning loss
+  policy_weight: 0.00001  # Weight for policy optimization loss\
+  
   # misc
-  seed: 1001
-  job_name: "{dataset}/h_{horizon}-hh_{history_horizon}-{model}-r_{returns_scale}-guidew_{condition_guidance_w}"
+  seed: 10044
+  job_name: "{dataset}/hh_{history_horizon}-{model}--guidew_{condition_guidance_w}-{seed}"
   horizon: 1
   returns_scale: 20
   env_type: "smac"
@@ -24,13 +27,12 @@ constants:
   model: "models.DiffusionBackbone"
   diffusion: "models.OfflineDiffusionRL"
   history_horizon: 30
-  n_diffusion_steps: 50
+  n_diffusion_steps: 100
   use_ddim_sample: True
-  n_ddim_steps: 10
+  n_ddim_steps: 15
 
   returns_condition: True
   predict_epsilon: True
-  dim: 64
   hidden_dim: 256
   condition_dropout: 0.1
   condition_guidance_w: 1.2
@@ -39,8 +41,8 @@ constants:
 
   # VAE+Diffusion RL specific parameters
   vae_latent_dim: 16
-  trajectory_latent_dim: 64
-  vae_weight: 0.2
+  trajectory_latent_dim: 128
+
   
   # VAE 预训练参数
   vae_pretrain_steps: 1000
@@ -60,9 +62,6 @@ constants:
   conservative_weight: 0.0
   use_conservative_loss: false
   use_behavior_cloning: true
-  bc_weight: 2
-  q_weight: 1.0  # Weight for Q-learning loss
-  policy_weight: 0.005  # Weight for policy optimization loss
 
   # dataset
   loader: "datasets.VAESequenceDataset"
@@ -71,21 +70,21 @@ constants:
   max_n_episodes: 50000
   preprocess_fns: []
   use_padding: True
-  discount: 0.95
+  discount: 0.99
   max_path_length: 60
   termination_penalty: 0.0
   include_returns: true
   include_env_ts: true
 
   # training
-  n_steps_per_epoch: 500 
-  n_train_steps: 10000 
+  n_steps_per_epoch: 10000 
+  n_train_steps: 200000 
   batch_size: 512  
-  learning_rate: 0.001
+  learning_rate: 0.00001
   gradient_accumulate_every: 1
-  ema_decay: 0.8
-  log_freq: 100
-  save_freq: 500
+  ema_decay: 0.95
+  log_freq: 1000
+  save_freq: 10000
   sample_freq: 0 
   n_saves: 2
   save_parallel: False
@@ -96,11 +95,11 @@ constants:
   evaluator: "utils.VAEDiffusionEvaluator"  # CHANGED: Use VAE-specific evaluator
   num_eval: 20
   num_envs: 10
-  eval_freq: 500
+  eval_freq: 10000
   test_ret: 1.0
 
   # Offline RL Trainer parameters
-  target_update_freq: 10
-  target_update_tau: 0.5
+  target_update_freq: 500
+  target_update_tau: 0.1
   # load checkpoint
   continue_training: false
