@@ -26,7 +26,7 @@ class OfflineRLTrainer(Trainer):
         if hasattr(self.model, 'q_function'):
             self.q_optimizer = torch.optim.Adam(
                 self.model.q_function.parameters(), 
-                lr=self.optimizer.defaults['lr']
+                lr=self.q_lr
             )
         else:
             self.q_optimizer = None
@@ -65,7 +65,29 @@ class OfflineRLTrainer(Trainer):
             # Initialize for this training step
             step_losses = []  # Store loss for each gradient accumulation step
             step_infos = {}   # Store all metrics for this step
-            
+            # Q-function warm-up for the first step
+            if step_idx == 0 and self.q_optimizer is not None:
+                # Perform Q-function warm-up iterations
+                q_warmup_steps = 1000
+                for warmup_i in range(q_warmup_steps):
+                    warmup_batch = next(self.dataloader)
+                    warmup_batch = self.batch_to_device(warmup_batch)
+                    
+                    # Only train Q-function during warm-up
+                    q_loss, _ = self.model.compute_q_loss(**warmup_batch)
+                    
+                    self.q_optimizer.zero_grad()
+                    q_loss.backward()
+                    self.q_optimizer.step()
+                    
+                    if warmup_i % 100 == 0:
+                        print(f"Q warm-up step {warmup_i}/{q_warmup_steps}, Q loss: {q_loss.item():.4f}")
+                
+                print(f"Q-function warm-up completed after {q_warmup_steps} steps")
+                self.model.target_q_function.load_state_dict(self.model.q_function.state_dict())
+                print("Target Q-function copied from Q-function")
+                self.q_optimizer.zero_grad()
+                
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dataloader)
                 batch = self.batch_to_device(batch)
@@ -91,25 +113,24 @@ class OfflineRLTrainer(Trainer):
                     # Compute average agent loss for this batch
                     avg_agent_loss = sum(agent_loss_tensors) / len(agent_loss_tensors)
                     
-                    # Then, compute Q-learning and policy optimization losses for all agents together
-                    if hasattr(self.model, 'q_function') and self.model.q_function is not None:
-                        # Compute Q-learning and policy losses for all agents (centralized)
-                        q_p_loss, q_info = self.model.compute_q_and_policy_losses(**batch)
-                        q_p_loss = q_p_loss / self.gradient_accumulate_every
-                        
-                        # Total loss for this batch
-                        batch_total_loss = avg_agent_loss + q_p_loss
-                        
-                        # Accumulate Q and policy infos
-                        for key, val in q_info.items():
-                            if key not in batch_infos:
-                                batch_infos[key] = []
-                            batch_infos[key].append(val.item() if torch.is_tensor(val) else val)
-                    else:
-                        batch_total_loss = avg_agent_loss
+                    # Compute Q-learning and policy losses for all agents (centralized)
+                    q_loss, policy_loss, q_p_info = self.model.compute_q_and_policy_losses(**batch)
+                    q_loss = q_loss / self.gradient_accumulate_every
+                    policy_loss = policy_loss / self.gradient_accumulate_every
+
+                    # Total loss for this batch
+                    batch_total_loss = avg_agent_loss + policy_loss
+                    batch_q_loss = q_loss
+                    # Accumulate Q and policy infos
+                    for key, val in q_p_info.items():
+                        if key not in batch_infos:
+                            batch_infos[key] = []
+                        batch_infos[key].append(val.item() if torch.is_tensor(val) else val)
+
                     
                     # Single backward pass
                     batch_total_loss.backward()
+                    batch_q_loss.backward()
                     
                     # Store loss for this batch
                     step_losses.append(batch_total_loss.item())
@@ -125,7 +146,9 @@ class OfflineRLTrainer(Trainer):
             # Update main model parameters
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
+            self.q_optimizer.step()
             self.optimizer.zero_grad()
+            self.q_optimizer.zero_grad()
             
             # Calculate final metrics for this step
             step_loss = np.mean(step_losses)  # Average loss across gradient accumulation steps
@@ -142,7 +165,7 @@ class OfflineRLTrainer(Trainer):
             if self.target_update_freq > 0 and self.step % self.target_update_freq == 0:
                 if hasattr(self.model, 'update_target_network'):
                     self.model.update_target_network(tau=self.model.target_update_tau)
-                    logger.print(f"[ OfflineRLTrainer ] Updated target network at step {self.step}", color="blue")
+                    # logger.print(f"[ OfflineRLTrainer ] Updated target network at step {self.step}", color="blue")
             
             # EMA update
             if self.step % self.update_ema_every == 0:

@@ -187,13 +187,15 @@ def main(Config, RUN):
         "n_reference": Config.n_reference,
         "train_device": Config.device,
         "save_checkpoints": Config.save_checkpoints,
+        "update_ema_every": Config.update_ema_every,
+        "q_lr": Config.q_lr,
     }
     
     # Add trainer-specific parameters
     if trainer_class == utils.OfflineRLTrainer:
         # Offline RL-specific parameters
         trainer_params.update({
-            "target_update_freq": getattr(Config, 'target_update_freq', 100),
+            "target_update_freq": getattr(Config, 'target_update_freq', 5),
         })
 
     trainer_config = utils.Config(trainer_class, **trainer_params)

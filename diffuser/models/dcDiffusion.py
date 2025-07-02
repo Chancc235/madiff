@@ -158,6 +158,20 @@ class OfflineDiffusionRL(nn.Module):
         # Loss functions
         self.data_encoder = data_encoder
         
+        # Freeze VAE parameters initially (will be unfrozen during pretraining)
+        self._freeze_vae_parameters()
+        
+    def _freeze_vae_parameters(self):
+        """Freeze VAE parameters to prevent updates during main training"""
+        for param in self.vae.parameters():
+            param.requires_grad = False
+        print("VAE parameters frozen")
+        
+    def _unfreeze_vae_parameters(self):
+        """Unfreeze VAE parameters for pretraining"""
+        for param in self.vae.parameters():
+            param.requires_grad = True
+        print("VAE parameters unfrozen")
     
     def encode_actions(self, actions):
         """Encode actions to latent space"""
@@ -271,7 +285,7 @@ class OfflineDiffusionRL(nn.Module):
         returns: Optional[torch.Tensor] = None,
         env_ts: Optional[torch.Tensor] = None,
         attention_masks: Optional[torch.Tensor] = None,
-        verbose: bool = True,
+        verbose: bool = False,
         return_diffusion: bool = False,
         agent_idx: Optional[int] = None,  # New parameter for decentralized mode
         enable_grad: bool = False,  # New parameter to control gradients
@@ -542,7 +556,7 @@ class OfflineDiffusionRL(nn.Module):
             next_trajectory_condition = torch.stack(next_conditions_list, dim=1).view(batch_size, -1)
             
             next_q_input = torch.cat([next_obs_flat, next_actions_latents_flat, next_trajectory_condition], dim=1)
-            next_q = self.target_q_function(next_q_input)
+            next_q = self.target_q_function(next_q_input).detach()
             
             # Process rewards and dones
             reward_scalar = rewards_last.view(batch_size, -1).mean(dim=-1, keepdim=True)  # (batch_size, 1)
@@ -607,7 +621,7 @@ class OfflineDiffusionRL(nn.Module):
 
             # Compute current Q-values
             q_input = torch.cat([obs_flat, actions_latents_flat, trajectory_condition_flat], dim=1)
-            q_value = self.q_function(q_input)
+            q_value = self.q_function(q_input).detach()
                 
             # Policy loss: negative Q-value (we want to maximize Q, so minimize -Q)
             policy_loss = -(q_value.expand_as(log_action_probs) * log_action_probs).mean()
@@ -659,13 +673,20 @@ class OfflineDiffusionRL(nn.Module):
             returns, env_ts, attention_masks,
         )
         
-        # Compute VAE loss
-        if self.decentralized and agent_idx is not None:
-            recon_loss, kl_loss = self.vae_loss(single_agent_actions, mu, log_var)
-        else:
-            recon_loss, kl_loss = self.vae_loss(actions, mu, log_var)
-        vae_loss = recon_loss + 0.1 * kl_loss
+        # # Compute VAE loss
+        # if self.decentralized and agent_idx is not None:
+        #     recon_loss, kl_loss = self.vae_loss(single_agent_actions, mu, log_var)
+        # else:
+        #     recon_loss, kl_loss = self.vae_loss(actions, mu, log_var)
+        # vae_loss = recon_loss + 0.1 * kl_loss
+        # VAE parameters should be frozen during main training
+        # Verify that VAE parameters are indeed frozen
+        vae_frozen = all(not param.requires_grad for param in self.vae.parameters())
+        if not vae_frozen:
+            print("Warning: VAE parameters are not frozen during main training!")
         
+        # VAE loss is disabled during main training since VAE is frozen
+        vae_loss = torch.tensor(0.0, device=x.device)
         # Use provided observations or extract from full trajectory
         if observations is None:
             observations = x[..., self.action_dim:]
@@ -756,6 +777,9 @@ class OfflineDiffusionRL(nn.Module):
         """Pre-train VAE before main training"""
         print(f"Pre-training VAE for {n_vae_steps} steps...")
         
+        # Unfreeze VAE parameters for pretraining
+        self._unfreeze_vae_parameters()
+        
         # Create optimizer for VAE only
         vae_optimizer = torch.optim.Adam(self.vae.parameters(), lr=vae_lr)
         
@@ -801,12 +825,16 @@ class OfflineDiffusionRL(nn.Module):
                       f"KL: {kl_loss.item():.4f}")
         
         print("VAE pre-training completed!")
+        
+        # Freeze VAE parameters after pretraining
+        self._freeze_vae_parameters()
+        
         return self
 
-    def compute_q_and_policy_losses(self, x, actions, history_trajectory, cond, observations=None, 
-                                   rewards=None, next_observations=None, dones=None, returns=None, 
-                                   env_ts=None, attention_masks=None, **kwargs):
-        """Compute Q-learning and policy optimization losses for all agents together (centralized)"""
+    def compute_q_loss(self, x, actions, history_trajectory, cond, observations=None, 
+                      rewards=None, next_observations=None, dones=None, returns=None, 
+                      env_ts=None, attention_masks=None, **kwargs):
+        """Compute Q-learning loss for all agents together (centralized)"""
         
         batch_size = len(x)
         
@@ -822,28 +850,72 @@ class OfflineDiffusionRL(nn.Module):
         
         # Q-learning loss if we have next states and rewards
         q_loss = torch.tensor(0.0, device=x.device)
-        policy_loss = torch.tensor(0.0, device=x.device)
         info = {}
         
         if next_observations is not None and rewards is not None and dones is not None:
             next_obs_last = next_observations[:, -1]
-                
             rewards_last = rewards[:, -1]  # [batch, n_agents, 1]
-
             dones_last = dones[:, -1]  # [batch, n_agents, 1]
-
             actions_last = actions[:, -1]  # [batch, n_agents, action_dim]
 
             # Compute Q-learning loss for all agents (centralized)
             q_loss = self.q_learning_loss(obs_last, actions_last, rewards_last, next_obs_last, dones_last, history_trajectory)
             
+            info["q_loss"] = q_loss
+        else:
+            info["q_loss"] = torch.tensor(0.0, device=x.device)
+        
+        return self.q_weight * q_loss, info
+
+    def compute_policy_loss(self, x, actions, history_trajectory, cond, observations=None, 
+                           rewards=None, next_observations=None, dones=None, returns=None, 
+                           env_ts=None, attention_masks=None, **kwargs):
+        """Compute policy optimization loss for all agents together (centralized)"""
+        
+        batch_size = len(x)
+        
+        # Use provided observations or extract from full trajectory
+        if observations is None:
+            observations = x[..., self.action_dim:]
+        
+        # Extract last timestep data (not t0)
+        if len(observations.shape) == 4:  # [batch, horizon, n_agents, obs_dim]
+            obs_last = observations[:, -1]  # [batch, n_agents, obs_dim]
+        else:
+            obs_last = observations
+        
+        # Policy optimization loss
+        policy_loss = torch.tensor(0.0, device=x.device)
+        info = {}
+        
+        if next_observations is not None and rewards is not None and dones is not None:
+            actions_last = actions[:, -1]  # [batch, n_agents, action_dim]
+
             # Compute policy optimization loss for all agents (centralized)
             policy_loss = self.policy_optimization_loss(obs_last, actions_last, history_trajectory)
             
-            info["q_loss"] = q_loss
             info["policy_loss"] = policy_loss
         else:
-            info["q_loss"] = torch.tensor(0.0, device=x.device)
             info["policy_loss"] = torch.tensor(0.0, device=x.device)
         
-        return self.q_weight * q_loss + self.policy_weight * policy_loss, info
+        return self.policy_weight * policy_loss, info
+
+    def compute_q_and_policy_losses(self, x, actions, history_trajectory, cond, observations=None, 
+                                   rewards=None, next_observations=None, dones=None, returns=None, 
+                                   env_ts=None, attention_masks=None, **kwargs):
+        """Compute Q-learning and policy optimization losses for all agents together (centralized)"""
+        
+        # Compute Q loss
+        q_loss_weighted, q_info = self.compute_q_loss(x, actions, history_trajectory, cond, observations,
+                                                     rewards, next_observations, dones, returns,
+                                                     env_ts, attention_masks, **kwargs)
+        
+        # Compute policy loss
+        policy_loss_weighted, policy_info = self.compute_policy_loss(x, actions, history_trajectory, cond, observations,
+                                                                    rewards, next_observations, dones, returns,
+                                                                    env_ts, attention_masks, **kwargs)
+        
+        # Combine info
+        info = {**q_info, **policy_info}
+        
+        return q_loss_weighted, policy_loss_weighted, info
