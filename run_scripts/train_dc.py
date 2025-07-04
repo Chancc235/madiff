@@ -31,7 +31,6 @@ def main(Config, RUN):
     Config.pred_future_padding = getattr(Config, "pred_future_padding", False)
     
     # VAE+Diffusion RL specific configs
-    Config.vae_latent_dim = getattr(Config, "vae_latent_dim", 64)
     Config.trajectory_latent_dim = getattr(Config, "trajectory_latent_dim", 128)
     Config.vae_weight = getattr(Config, "vae_weight", 1.0)
     Config.rl_learning_rate = getattr(Config, "rl_learning_rate", 3e-4)
@@ -121,7 +120,7 @@ def main(Config, RUN):
         savepath="model_config.pkl",
         n_agents=Config.n_agents,
         # For DiffusionBackbone, we need different parameters than TemporalUnet
-        latent_dim=Config.vae_latent_dim,
+        action_dim=action_dim,
         trajectory_latent_dim=Config.trajectory_latent_dim,
         horizon=Config.horizon,
         hidden_dim=getattr(Config, 'backbone_hidden_dim', Config.hidden_dim),
@@ -140,7 +139,6 @@ def main(Config, RUN):
         history_horizon=Config.history_horizon,
         observation_dim=observation_dim,
         action_dim=action_dim,
-        vae_latent_dim=Config.vae_latent_dim,
         trajectory_latent_dim=Config.trajectory_latent_dim,
         hidden_dim=Config.hidden_dim,
         n_timesteps=Config.n_diffusion_steps,
@@ -155,8 +153,12 @@ def main(Config, RUN):
         use_conservative_loss=getattr(Config, 'use_conservative_loss', True),
         use_behavior_cloning=getattr(Config, 'use_behavior_cloning', True),
         bc_weight=getattr(Config, 'bc_weight', 1.0),
+        q_weight=getattr(Config, 'q_weight', 1.0),  # Weight for Q-learning loss
+        policy_weight=getattr(Config, 'policy_weight', 0.1),  # Weight for policy optimization loss
+        diversity_weight=getattr(Config, 'diversity_weight', 0.1),  # Weight for diversity loss
         backbone_layers=getattr(Config, 'backbone_layers', 4),
         backbone_hidden_dim=getattr(Config, 'backbone_hidden_dim', 256),
+        pattern_latent_dim=getattr(Config, 'pattern_latent_dim', 64),
         data_encoder=data_encoder,
         decentralized=getattr(Config, 'decentralized_execution', False),
         discrete_action=getattr(Config, 'discrete_action', False),  # Add discrete_action parameter

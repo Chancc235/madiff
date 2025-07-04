@@ -30,34 +30,7 @@ class OfflineRLTrainer(Trainer):
             )
         else:
             self.q_optimizer = None
-            
-            
-    def pretrain_vae(self, n_vae_steps=2000, vae_lr=1e-3):
-        """Pre-train VAE before main training"""
-        if hasattr(self.model, 'pretrain_vae'):
-            # Create a separate dataloader for VAE pretraining
-            def cycle_dataloader():
-                while True:
-                    for data in torch.utils.data.DataLoader(
-                        self.dataset,
-                        batch_size=self.batch_size,
-                        num_workers=0,
-                        shuffle=True,
-                        pin_memory=True,
-                    ):
-                        yield data
-            
-            vae_dataloader = cycle_dataloader()
-            
-            self.model.pretrain_vae(
-                dataloader=vae_dataloader,
-                n_vae_steps=n_vae_steps,
-                vae_lr=vae_lr,
-                device=self.device,
-                log_freq=100
-            )
-        else:
-            print("Model does not support VAE pretraining")
+
     
     def train(self, n_train_steps):
         """Training loop for offline RL"""
@@ -68,7 +41,7 @@ class OfflineRLTrainer(Trainer):
             # Q-function warm-up for the first step
             if step_idx == 0 and self.q_optimizer is not None:
                 # Perform Q-function warm-up iterations
-                q_warmup_steps = 1000
+                q_warmup_steps = n_train_steps
                 for warmup_i in range(q_warmup_steps):
                     warmup_batch = next(self.dataloader)
                     warmup_batch = self.batch_to_device(warmup_batch)
@@ -87,7 +60,7 @@ class OfflineRLTrainer(Trainer):
                 self.model.target_q_function.load_state_dict(self.model.q_function.state_dict())
                 print("Target Q-function copied from Q-function")
                 self.q_optimizer.zero_grad()
-                
+            scale_loss_sum = 0    
             for i in range(self.gradient_accumulate_every):
                 batch = next(self.dataloader)
                 batch = self.batch_to_device(batch)
@@ -97,40 +70,29 @@ class OfflineRLTrainer(Trainer):
                     # Decentralized training: iterate over all agents for individual losses
                     agent_loss_tensors = []
                     batch_infos = {}  # Info for this batch
+
+                    # Compute loss for specific agent (without Q-learning and policy optimization)
+                    agent_loss, agent_info = self.model.loss(**batch)
+                    scale_agent_loss = agent_loss / self.gradient_accumulate_every
+                    scale_loss_sum += scale_agent_loss
                     
-                    for agent_idx in range(self.model.n_agents):
-                        # Compute loss for specific agent (without Q-learning and policy optimization)
-                        agent_loss, agent_info = self.model.loss(agent_idx=agent_idx, **batch)
-                        agent_loss = agent_loss / self.gradient_accumulate_every
-                        agent_loss_tensors.append(agent_loss)
-                        
-                        # Accumulate info for this agent
-                        for key, val in agent_info.items():
-                            if key not in batch_infos:
-                                batch_infos[key] = []
-                            batch_infos[key].append(val.item() if torch.is_tensor(val) else val)
-                    
-                    # Compute average agent loss for this batch
-                    avg_agent_loss = sum(agent_loss_tensors) / len(agent_loss_tensors)
+                    batch_infos = agent_info
+                    batch_total_loss = agent_loss
                     
                     # Compute Q-learning and policy losses for all agents (centralized)
                     q_loss, policy_loss, q_p_info = self.model.compute_q_and_policy_losses(**batch)
-                    q_loss = q_loss / self.gradient_accumulate_every
-                    policy_loss = policy_loss / self.gradient_accumulate_every
+                    scale_q_loss = q_loss / self.gradient_accumulate_every
+                    scale_policy_loss = policy_loss / self.gradient_accumulate_every
+                    scale_loss_sum += scale_policy_loss
 
                     # Total loss for this batch
-                    batch_total_loss = avg_agent_loss + policy_loss
+                    batch_total_loss += policy_loss
                     batch_q_loss = q_loss
                     # Accumulate Q and policy infos
                     for key, val in q_p_info.items():
                         if key not in batch_infos:
                             batch_infos[key] = []
-                        batch_infos[key].append(val.item() if torch.is_tensor(val) else val)
-
-                    
-                    # Single backward pass
-                    batch_total_loss.backward()
-                    batch_q_loss.backward()
+                        batch_infos[key].append(val)
                     
                     # Store loss for this batch
                     step_losses.append(batch_total_loss.item())
@@ -139,10 +101,11 @@ class OfflineRLTrainer(Trainer):
                     for key, val_list in batch_infos.items():
                         if key not in step_infos:
                             step_infos[key] = []
-                        # Average the values across agents for this batch
                         avg_val = np.mean(val_list)
+                        
                         step_infos[key].append(avg_val)
-
+            scale_loss_sum.backward()
+            scale_q_loss.backward()
             # Update main model parameters
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()

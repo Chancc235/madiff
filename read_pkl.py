@@ -29,7 +29,8 @@ def extract_metrics_from_log(log_file_path):
     return metrics_data
 
 # 从训练日志中提取数据
-log_file = "./logs/dc_smac/3m-Good/h_1-hh_30-models.DiffusionBackbone-r_20-guidew_1.2/1001/outputs.log"
+root_dir = "./logs/dc_smac/3m-Good/" + "hh_30-bcw_10.0-qw_1.0-pw_0.001-guidew_1.2-10034/10034"
+log_file = f"{root_dir}/outputs.log"
 metrics_data = extract_metrics_from_log(log_file)
 
 print(f"提取到 {len(metrics_data)} 个训练步骤的数据")
@@ -48,17 +49,7 @@ if metrics_data:
     print(df.describe())
     
     # 保存为CSV
-    df.to_csv('extracted_metrics.csv', index=False)
+    df.to_csv(f'{root_dir}/extracted_metrics.csv', index=False)
     print("\n数据已保存到 extracted_metrics.csv")
 else:
     print("没有找到有效的metrics数据")
-
-# 对比：查看原始的metrics.pkl文件
-print("\n" + "="*50)
-print("原始 metrics.pkl 文件内容:")
-try:
-    with open("./logs/dc_smac/3m-Good/h_1-hh_30-models.DiffusionBackbone-r_20-guidew_1.2/1001/metrics.pkl", 'rb') as f:
-        pkl_data = pickle.load(f)
-    print(pkl_data)
-except Exception as e:
-    print(f"读取失败: {e}")

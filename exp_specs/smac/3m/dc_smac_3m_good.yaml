@@ -6,21 +6,22 @@ meta_data:
 variables:
 constants:
   vae_weight: 0.2
-  bc_weight: 4.0
+  bc_weight: 10.0
   q_weight: 1.0  # Weight for Q-learning loss
-  policy_weight: 0.00001  # Weight for policy optimization loss
+  policy_weight: 0.001  # Weight for policy optimization loss
+  diversity_weight: 1.0
   q_lr: 0.001
-  learning_rate: 0.0002
+  learning_rate: 0.0001
 
-  n_steps_per_epoch: 5000 
-  n_train_steps: 100000 
+  n_steps_per_epoch: 300 
+  n_train_steps:  6000
   batch_size: 1024 
-  gradient_accumulate_every: 2
-  ema_decay: 0.995
-  update_ema_every: 10
+  gradient_accumulate_every: 1
+  ema_decay: 0.95
+  update_ema_every: 5
 
   # misc
-  seed: 10021
+  seed: 10015
   job_name: "{dataset}/hh_{history_horizon}-bcw_{bc_weight}-qw_{q_weight}-pw_{policy_weight}-guidew_{condition_guidance_w}-{seed}"
   horizon: 1
   returns_scale: 20
@@ -38,7 +39,7 @@ constants:
   history_horizon: 30
   n_diffusion_steps: 100
   use_ddim_sample: True
-  n_ddim_steps: 10
+  n_ddim_steps: 15
 
   returns_condition: True
   predict_epsilon: True
@@ -48,22 +49,23 @@ constants:
   clip_denoised: True
   renderer: "utils.SMACRenderer"
 
-  # VAE+Diffusion RL specific parameters
-  vae_latent_dim: 16
-  trajectory_latent_dim: 128
 
-  
+  trajectory_latent_dim: 64
+  pattern_latent_dim: 64
+  pattern_num_layers: 2
+  pattern_dropout: 0.1
+
   # VAE 预训练参数
-  vae_pretrain_steps: 2000
+  vae_pretrain_steps: 300
   vae_learning_rate: 0.001
   
   # DiffusionBackbone specific parameters
-  backbone_layers: 3
+  backbone_layers: 2
   backbone_hidden_dim: 256
   
   # TrajectoryEncoder sequence model parameters
   trajectory_sequence_model: "transformer"  # Options: "transformer", "lstm", "gru"
-  trajectory_num_layers: 1
+  trajectory_num_layers: 2
   trajectory_num_heads: 2
   trajectory_dropout: 0.1
   
@@ -86,8 +88,8 @@ constants:
   include_env_ts: true
 
   # training
-  log_freq: 1000
-  save_freq: 10000
+  log_freq: 150
+  save_freq: 300
   sample_freq: 0 
   n_saves: 2
   save_parallel: False
@@ -98,12 +100,12 @@ constants:
   evaluator: "utils.VAEDiffusionEvaluator"  # CHANGED: Use VAE-specific evaluator
   num_eval: 20
   num_envs: 10
-  eval_freq: 10000
+  eval_freq: 300
   test_ret: 1.0
   vae_learning_rate: 0.001
 
   # Offline RL Trainer parameters
-  target_update_freq: 2
+  target_update_freq: 5
   target_update_tau: 0.005
   # load checkpoint
   continue_training: false

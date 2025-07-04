@@ -123,7 +123,7 @@ class VAEDiffusionEvaluator:
         # Ensure models are on the correct device after loading
         self.trainer.model = self.trainer.model.to(Config.device)
         self.trainer.ema_model = self.trainer.ema_model.to(Config.device)
-        
+        self.trainer.ema_model.eval()
         if self.verbose:
             print(f"Loaded checkpoint from step {load_step} and moved to {Config.device}")
             
@@ -301,18 +301,10 @@ class VAEDiffusionEvaluator:
                         kwargs['returns'] = target_return
                     
                     # Generate actions for all agents
-                    if hasattr(self.trainer.ema_model, 'decentralized') and self.trainer.ema_model.decentralized:
-                        # In decentralized mode, generate actions for each agent separately
-                        all_agent_actions = []
-                        for agent_idx in range(Config.n_agents):
-                            agent_kwargs = kwargs.copy()
-                            agent_action = self.trainer.ema_model.get_action(agent_idx=agent_idx, **agent_kwargs)
-                            all_agent_actions.append(agent_action)
-                        
-                        # Concatenate all agent actions
-                        actions_tensor = torch.cat(all_agent_actions, dim=0)  # [batch, n_agents * action_dim]
-                        # Reshape to [batch, n_agents, action_dim]
-                        actions_tensor = actions_tensor.reshape(batch_size, Config.n_agents, -1)
+                    agent_kwargs = kwargs.copy()
+                    actions_tensor = self.trainer.ema_model.get_action(**agent_kwargs)
+                    # Reshape to [batch, n_agents, action_dim]
+                    actions_tensor = actions_tensor.view(batch_size, Config.n_agents, -1)
                     
                     actions_batch = to_np(actions_tensor)  # [batch_size, n_agents, action_dim]
             

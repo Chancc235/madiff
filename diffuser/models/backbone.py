@@ -9,66 +9,65 @@ import diffuser.utils as utils
 from diffuser.models.helpers import Losses, apply_conditioning
 from diffuser.models.temporal import SinusoidalPosEmb, TemporalMlpBlock
 
-
-class VAE(nn.Module):
-    """VAE for encoding/decoding actions"""
+class PatternEncoder(nn.Module):
+    """LSTM-based sequence model for encoding action patterns"""
     
     def __init__(
         self,
         action_dim: int,
+        hidden_dim: int = 128,
         latent_dim: int = 64,
-        hidden_dim: int = 256,
-        n_agents: int = 1,
+        num_layers: int = 2,
+        dropout: float = 0.1,
+        bidirectional: bool = True,
     ):
         super().__init__()
         self.action_dim = action_dim
-        self.latent_dim = latent_dim
         self.hidden_dim = hidden_dim
-        self.n_agents = n_agents
+        self.latent_dim = latent_dim
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
         
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(action_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+        # Input projection
+        self.input_proj = nn.Linear(action_dim, hidden_dim)
+        
+        # LSTM encoder
+        self.lstm = nn.LSTM(
+            input_size=hidden_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional
         )
         
-        # Latent space parameters
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_var = nn.Linear(hidden_dim, latent_dim)
+        # Output dimension depends on bidirectional setting
+        lstm_output_dim = hidden_dim
         
-        # Decoder
-        self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
-        )
+        # Output projection to latent dimension
+        self.output_proj = nn.Linear(lstm_output_dim, latent_dim)
         
-    def encode(self, x):
-        """Encode action to latent space"""
-        h = self.encoder(x)
-        mu = self.fc_mu(h)
-        log_var = self.fc_var(h)
-        return mu, log_var
-    
-    def reparameterize(self, mu, log_var):
-        """Reparameterization trick"""
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-    
-    def decode(self, z):
-        """Decode latent to action"""
-        return self.decoder(z)
-    
     def forward(self, x):
-        """Forward pass through VAE"""
-        mu, log_var = self.encode(x)
-        z = self.reparameterize(mu, log_var)
-        return self.decode(z), mu, log_var
+        """
+        Args:
+            x: [batch_size, seq_len, action_dim] - sequence of actions
+            
+        Returns:
+            latent: [batch_size, latent_dim] - encoded pattern representation
+        """
+        batch_size, seq_len, _ = x.shape
+        
+        # Input projection
+        x = self.input_proj(x)  # [batch_size, seq_len, hidden_dim]
+        
+        # LSTM encoding
+        lstm_out, (h_n, c_n) = self.lstm(x)  # lstm_out: [batch_size, seq_len, hidden_dim * (2 if bidirectional else 1)]
+        final_hidden = h_n[-1]  # [batch_size, hidden_dim]
+        
+        # Project to latent dimension
+        latent = self.output_proj(final_hidden)  # [batch_size, latent_dim]
+        
+        return latent
 
 
 class TrajectoryEncoder(nn.Module):
@@ -210,7 +209,7 @@ class DiffusionBackbone(nn.Module):
     
     def __init__(
         self,
-        latent_dim: int,
+        action_dim: int,
         trajectory_latent_dim: int,
         horizon: int,
         n_agents: int,
@@ -221,7 +220,7 @@ class DiffusionBackbone(nn.Module):
         returns_condition: bool = False,  # Add returns conditioning support
     ):
         super().__init__()
-        self.latent_dim = latent_dim
+        self.action_dim = action_dim
         self.trajectory_latent_dim = trajectory_latent_dim
         self.horizon = horizon
         self.n_agents = n_agents
@@ -231,7 +230,7 @@ class DiffusionBackbone(nn.Module):
         self.returns_condition = returns_condition
         
         # Input dimension: action latents + trajectory condition
-        input_dim = latent_dim + trajectory_latent_dim
+        input_dim = action_dim + trajectory_latent_dim
         
         # Time embedding
         self.time_mlp = nn.Sequential(
@@ -247,8 +246,6 @@ class DiffusionBackbone(nn.Module):
                 nn.Linear(1, time_embed_dim // 2),
                 nn.ReLU(),
                 nn.Linear(time_embed_dim // 2, time_embed_dim),
-                nn.ReLU(),
-                nn.Linear(time_embed_dim, time_embed_dim),
             )
             self.mask_dist = torch.distributions.Bernoulli(probs=0.1)
         
@@ -267,7 +264,7 @@ class DiffusionBackbone(nn.Module):
         ])
         
         # Output projection
-        self.output_proj = nn.Linear(hidden_dim, latent_dim)
+        self.output_proj = nn.Linear(hidden_dim, action_dim)
         
     def forward(
         self, 
@@ -278,21 +275,16 @@ class DiffusionBackbone(nn.Module):
         attention_masks=None,
         use_dropout=True,
         force_dropout=False,
-        agent_idx=None,  # New parameter for decentralized execution
         **kwargs
     ):
         """
         Forward pass through diffusion backbone
-        x: [batch, horizon, n_agents, latent_dim + trajectory_latent_dim] (centralized)
-           or [batch, horizon, 1, latent_dim + trajectory_latent_dim] (decentralized)
+        x: [batch, n_agents, action_dim + trajectory_latent_dim] for independent agent denoising
         t: [batch] timestep
         returns: [batch, 1] return values for conditioning (optional)
         agent_idx: Index of agent for decentralized mode
         """
-        if len(x.shape) == 4:
-            batch_size, horizon, n_agents, input_dim = x.shape
-        else:
-            batch_size, input_dim = x.shape
+        batch_size, n_agents, input_dim = x.shape
         
         # Time embedding
         t_emb = self.time_mlp(t)  # [batch, time_embed_dim]
@@ -300,19 +292,7 @@ class DiffusionBackbone(nn.Module):
         # Returns conditioning
         if self.returns_condition:
             if returns is not None and not force_dropout:
-                # Handle different return shapes
-                if len(returns.shape) == 2 and returns.shape[-1] > 1:
-                    # Multi-agent returns [batch, n_agents] -> take mean
-                    returns_scalar = returns.mean(dim=-1, keepdim=True)  # [batch, 1]
-                elif len(returns.shape) == 1:
-                    # Single return per batch [batch] -> add dimension
-                    returns_scalar = returns.unsqueeze(-1)  # [batch, 1]
-                elif len(returns.shape) == 2 and returns.shape[-1] == 1:
-                    # Already [batch, 1] format
-                    returns_scalar = returns
-                else:
-                    # Fallback: flatten and take mean for any other shapes
-                    returns_scalar = returns.view(returns.shape[0], -1).mean(dim=-1, keepdim=True)  # [batch, 1]
+                returns_scalar = returns.float().view(returns.shape[0], -1).mean(dim=-1, keepdim=True)  # [batch, 1]
                 
                 # Ensure returns_scalar is always [batch, 1]
                 if returns_scalar.shape[-1] != 1:
@@ -333,34 +313,22 @@ class DiffusionBackbone(nn.Module):
             # Combine time and returns embeddings
             t_emb = t_emb + returns_emb
         
+        
         # Input projection
-        x = self.input_proj(x)  # [batch, hidden_dim]
+        x = self.input_proj(x)  # [batch, n_agents, hidden_dim]
         
-        # For TemporalMlpBlock, we need to reshape to [batch * n_agents * horizon, hidden_dim]
-        # and then reshape back after processing
-        if len(x.shape) == 4:
-            x_reshaped = x.reshape(batch_size * n_agents * horizon, self.hidden_dim)  # [batch * n_agents * horizon, hidden_dim]
-        else:
-            x_reshaped = x.reshape(batch_size, self.hidden_dim)
+        # Expand time embedding for all agents
+        # t_emb: [batch, n_agents, time_embed_dim] -> [batch * n_agents, time_embed_dim]
+        t_emb_expanded = t_emb.unsqueeze(1).expand(batch_size, n_agents, -1)
         
-        # Expand time embedding for all agents and timesteps
-        if len(x.shape) == 4:
-            t_emb_expanded = t_emb.unsqueeze(1).unsqueeze(1).expand(batch_size, n_agents, horizon, -1)
-            t_emb_expanded = t_emb_expanded.reshape(batch_size * n_agents * horizon, -1)  # [batch * n_agents * horizon, time_embed_dim]
-        else:
-            t_emb_expanded = t_emb.unsqueeze(1).reshape(batch_size, -1)  # [batch, time_embed_dim]
-        
-        # Apply temporal layers
+        # Apply temporal layers (each agent processed independently)
         for i, temp_layer in enumerate(self.temporal_layers):
-            x_reshaped = temp_layer(x_reshaped, t_emb_expanded)
-        
-        # Reshape back to [batch, horizon, n_agents, hidden_dim] after temporal processing
-        if len(x.shape) == 4:
-            x = x_reshaped.reshape(batch_size, n_agents, horizon, self.hidden_dim).permute(0, 2, 1, 3)
-        else:
-            x = x_reshaped.reshape(batch_size, self.hidden_dim)
+            x = temp_layer(x, t_emb_expanded)
         
         # Output projection
-        output = self.output_proj(x)  # [batch, horizon, n_agents, latent_dim]
+        output = self.output_proj(x)  # [batch, n_agents, action_dim]
+        
+        # Reshape back to [batch, n_agents, action_dim]
+        output = output.view(batch_size, n_agents, -1)
         
         return output 
