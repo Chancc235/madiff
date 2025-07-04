@@ -79,20 +79,30 @@ class OfflineRLTrainer(Trainer):
                     batch_infos = agent_info
                     batch_total_loss = agent_loss
                     
-                    # Compute Q-learning and policy losses for all agents (centralized)
-                    q_loss, policy_loss, q_p_info = self.model.compute_q_and_policy_losses(**batch)
-                    scale_q_loss = q_loss / self.gradient_accumulate_every
-                    scale_policy_loss = policy_loss / self.gradient_accumulate_every
-                    scale_loss_sum += scale_policy_loss
-
-                    # Total loss for this batch
-                    batch_total_loss += policy_loss
-                    batch_q_loss = q_loss
-                    # Accumulate Q and policy infos
-                    for key, val in q_p_info.items():
+                    critic_loss, critic_info = self.model.compute_critic_loss(**batch)
+                    scale_critic_loss = critic_loss / self.gradient_accumulate_every
+                    scale_loss_sum += scale_critic_loss
+                    batch_total_loss += critic_loss
+                    batch_critic_loss = critic_loss
+                    for key, val in critic_info.items():
                         if key not in batch_infos:
                             batch_infos[key] = []
                         batch_infos[key].append(val)
+                    
+                    # Compute Q-learning and policy losses for all agents (centralized)
+                    # q_loss, policy_loss, q_p_info = self.model.compute_q_and_policy_losses(**batch)
+                    # scale_q_loss = q_loss / self.gradient_accumulate_every
+                    # scale_policy_loss = policy_loss / self.gradient_accumulate_every
+                    # scale_loss_sum += scale_policy_loss
+
+                    # # Total loss for this batch
+                    # batch_total_loss += policy_loss
+                    # batch_q_loss = q_loss
+                    # Accumulate Q and policy infos
+                    # for key, val in q_p_info.items():
+                    #     if key not in batch_infos:
+                    #         batch_infos[key] = []
+                    #     batch_infos[key].append(val)
                     
                     # Store loss for this batch
                     step_losses.append(batch_total_loss.item())
@@ -105,13 +115,13 @@ class OfflineRLTrainer(Trainer):
                         
                         step_infos[key].append(avg_val)
             scale_loss_sum.backward()
-            scale_q_loss.backward()
+            # scale_q_loss.backward()
             # Update main model parameters
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
-            self.q_optimizer.step()
+            # self.q_optimizer.step()
             self.optimizer.zero_grad()
-            self.q_optimizer.zero_grad()
+            # self.q_optimizer.zero_grad()
             
             # Calculate final metrics for this step
             step_loss = np.mean(step_losses)  # Average loss across gradient accumulation steps
@@ -125,10 +135,10 @@ class OfflineRLTrainer(Trainer):
             final_infos['total_loss'] = step_loss
             
             # Target network update
-            if self.target_update_freq > 0 and self.step % self.target_update_freq == 0:
-                if hasattr(self.model, 'update_target_network'):
-                    self.model.update_target_network(tau=self.model.target_update_tau)
-                    # logger.print(f"[ OfflineRLTrainer ] Updated target network at step {self.step}", color="blue")
+            # if self.target_update_freq > 0 and self.step % self.target_update_freq == 0:
+            #     if hasattr(self.model, 'update_target_network'):
+            #         self.model.update_target_network(tau=self.model.target_update_tau)
+            #         # logger.print(f"[ OfflineRLTrainer ] Updated target network at step {self.step}", color="blue")
             
             # EMA update
             if self.step % self.update_ema_every == 0:
