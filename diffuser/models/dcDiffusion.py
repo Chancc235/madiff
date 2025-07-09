@@ -119,40 +119,39 @@ class OfflineDiffusionRL(nn.Module):
         # Calculate proper input dimensions for Q-function
         # Q-function always sees all agents' data for proper value evaluation
         # even in decentralized execution mode
-        # q_input_dim = observation_dim * n_agents + pattern_latent_dim * n_agents + trajectory_latent_dim * n_agents
+        q_input_dim = observation_dim * n_agents + action_dim * n_agents + trajectory_latent_dim * n_agents
+        pattern_q_input_dim = observation_dim * n_agents + pattern_latent_dim * n_agents + trajectory_latent_dim * n_agents
         
         # # Value function for offline RL (Q-function)
-        # self.q_function = nn.Sequential(
-        #     nn.Linear(q_input_dim, hidden_dim),
-        #     nn.BatchNorm1d(hidden_dim),
-        #     nn.Mish(),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.BatchNorm1d(hidden_dim),
-        #     nn.Mish(),
-        #     nn.Linear(hidden_dim, 1),
-        # )
-        # # Target Q-function for stable training
-        # self.target_q_function = nn.Sequential(
-        #     nn.Linear(q_input_dim, hidden_dim),
-        #     nn.BatchNorm1d(hidden_dim),
-        #     nn.Mish(),
-        #     nn.Linear(hidden_dim, hidden_dim),
-        #     nn.BatchNorm1d(hidden_dim),
-        #     nn.Mish(),
-        #     nn.Linear(hidden_dim, 1),
-        # )
-        # # Initialize target network
-        # self.target_q_function.load_state_dict(self.q_function.state_dict())
-        
-        self.critic_function = nn.Sequential(
-            nn.Linear((pattern_latent_dim + trajectory_latent_dim) * n_agents, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+        self.q_function = nn.Sequential(
+            nn.Linear(q_input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.Mish(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.Mish(),
             nn.Linear(hidden_dim, 1),
+        )
+        # Target Q-function for stable training
+        self.target_q_function = nn.Sequential(
+            nn.Linear(q_input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, 1),
+        )
+        # # Initialize target network
+        self.target_q_function.load_state_dict(self.q_function.state_dict())
+        self.pattern_q_function = nn.Sequential(
+            nn.Linear(pattern_q_input_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Mish(),
+            nn.Linear(hidden_dim, 1),
         )
 
         # Noise scheduler
@@ -396,14 +395,18 @@ class OfflineDiffusionRL(nn.Module):
             agent_condition = self.encode_trajectory(history_trajectory, agent_idx=agent_idx)
             trajectory_conditions.append(agent_condition)
         trajectory_conditions = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1).detach()
-        actions, pattern_latents = self.conditional_sample(cond, return_diffusion=True, verbose=False)
 
         obs_last = obs
         actions_last = actions
         next_obs_last = next_obs
         rewards_last = rewards
         dones_last = dones
-        
+        if self.discrete_action:
+            action_indices = actions_last.squeeze(-1).long()
+            action_indices = torch.clamp(action_indices, 0, self.action_dim - 1)
+            actions_onehot = F.one_hot(action_indices, num_classes=self.action_dim).float()
+            actions_last = actions_onehot
+
         # Use all agents data directly
         # obs_last is already [batch, n_agents, obs_dim]
         # actions_last is already [batch, n_agents, action_dim]
@@ -414,10 +417,9 @@ class OfflineDiffusionRL(nn.Module):
         obs_flat = obs_last.view(batch_size, -1)
         actions_flat = actions_last.view(batch_size, -1)
         next_obs_flat = next_obs_last.view(batch_size, -1)
-        pattern_latents_flat = pattern_latents.view(batch_size, -1).detach()
 
         # Compute current Q-values
-        q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_conditions], dim=-1)
+        q_input = torch.cat([obs_flat, actions_flat, trajectory_conditions], dim=-1)
         q_current = self.q_function(q_input)
         
         # Compute target Q-values
@@ -450,14 +452,13 @@ class OfflineDiffusionRL(nn.Module):
                 # Create condition dict for sampling with updated trajectory
                 next_cond = {"history_trajectory": updated_trajectory}
                 
-            _, next_pattern_latents = self.conditional_sample(next_cond, return_diffusion=True, verbose=False)
+            actions_next_flat = self.conditional_sample(next_cond, verbose=False).view(batch_size, -1)
 
 
             # Concatenate actions and average pool conditions
-            next_pattern_latents_flat = next_pattern_latents.view(batch_size, -1).detach()
             next_trajectory_condition = torch.stack(next_conditions_list, dim=1).view(batch_size, -1)
             
-            next_q_input = torch.cat([next_obs_flat, next_pattern_latents_flat, next_trajectory_condition], dim=1)
+            next_q_input = torch.cat([next_obs_flat, actions_next_flat, next_trajectory_condition], dim=1)
             next_q = self.target_q_function(next_q_input).detach()
             
             # Process rewards and dones
@@ -468,6 +469,39 @@ class OfflineDiffusionRL(nn.Module):
         
         q_loss = F.mse_loss(q_current, target_q)
         return q_loss 
+
+    def pattern_q_learning_loss(self, obs, rewards, dones, history_trajectory):
+        """Pattern Q-learning loss for value function training"""
+        
+        batch_size = obs.shape[0]
+        device = obs.device
+        cond = {"history_trajectory": history_trajectory}
+        
+        # Encode trajectory for each agent and average the conditions
+        trajectory_conditions = []
+        pattern_latents_list = []
+        for agent_idx in range(self.n_agents):
+            agent_condition = self.encode_trajectory(history_trajectory, agent_idx=agent_idx)
+            trajectory_conditions.append(agent_condition)
+        trajectory_conditions = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1).detach()
+
+        obs_last = obs
+        rewards_last = rewards
+        dones_last = dones
+
+        obs_flat = obs_last.view(batch_size, -1)
+        actions, pattern_latents = self.conditional_sample(cond, return_diffusion=True, verbose=False)
+        actions_flat = actions.view(batch_size, -1)
+        pattern_latents_flat = pattern_latents.view(batch_size, -1).detach()
+
+        q_input = torch.cat([obs_flat, actions_flat, trajectory_conditions], dim=-1)
+        pattern_q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_conditions], dim=-1)
+
+        q_current = self.pattern_q_function(pattern_q_input)
+        q_label = self.q_function(q_input).detach()
+        q_loss = F.mse_loss(q_current, q_label)
+        return q_loss
+        
 
     def policy_optimization_loss(self, obs, actions, history_trajectory, agent_idx=None):
         """Policy optimization loss: maximize Q(s, π(s)) + diversity loss"""
@@ -525,12 +559,12 @@ class OfflineDiffusionRL(nn.Module):
             trajectory_condition_flat = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1)
 
             # Compute current Q-values
-            q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_condition_flat], dim=1)
+            pattern_q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_condition_flat], dim=1)
+            pattern_q_value = self.pattern_q_function(pattern_q_input).detach() + 1e-8
             if self.discrete_action:
-                q_value = self.q_function(q_input).detach() + 1e-8
-                policy_loss = -(q_value.expand_as(log_action_probs) * log_action_probs).mean()
+                policy_loss = -(pattern_q_value.expand_as(log_action_probs) * log_action_probs).mean()
             else:
-                policy_loss = -q_value.mean() + 1e-8
+                policy_loss = -pattern_q_value.mean() + 1e-8
 
         return policy_loss
 
@@ -659,7 +693,18 @@ class OfflineDiffusionRL(nn.Module):
         else:
             info["q_loss"] = 0.0
         
-        return self.q_weight * q_loss, info
+        return q_loss, info
+
+    def compute_pattern_q_loss(self, x, rewards, dones, history_trajectory, cond, observations=None, **kwargs):
+        """Compute pattern Q-learning loss for all agents together (centralized)"""
+        rewards = rewards[:, -1]  # [batch, n_agents, 1]
+        dones = dones[:, -1]  # [batch, n_agents, 1]
+        observations = observations[:, -1]  # [batch, n_agents, obs_dim]
+        # Compute pattern Q-learning loss for all agents (centralized)
+        pattern_q_loss = self.pattern_q_learning_loss(observations, rewards, dones, history_trajectory)
+        info = {}
+        info["pattern_q_loss"] = pattern_q_loss.item() if torch.is_tensor(pattern_q_loss) else pattern_q_loss
+        return pattern_q_loss, info
 
     def compute_policy_loss(self, x, actions, history_trajectory, cond, observations=None, 
                            rewards=None, next_observations=None, dones=None, returns=None, 
@@ -691,42 +736,13 @@ class OfflineDiffusionRL(nn.Module):
         """Compute Q-learning and policy optimization losses for all agents together (centralized)"""
         
         # Compute Q loss
-        q_loss_weighted, q_info = self.compute_q_loss(x, actions, history_trajectory, cond, observations,
-                                                     rewards, next_observations, dones, returns,
-                                                     env_ts, attention_masks, **kwargs)
-        
+        pattern_q_loss_weighted, pattern_q_info = self.compute_pattern_q_loss(x, rewards, dones, history_trajectory, cond, observations, **kwargs)
         # Compute policy loss
         policy_loss_weighted, policy_info = self.compute_policy_loss(x, actions, history_trajectory, cond, observations,
                                                                     rewards, next_observations, dones, returns,
                                                                     env_ts, attention_masks, **kwargs)
         
         # Combine info
-        info = {**q_info, **policy_info}
+        info = {**pattern_q_info, **policy_info}
         
-        return q_loss_weighted, policy_loss_weighted, info
-    
-    def compute_critic_loss(self, x, actions, history_trajectory, cond, observations=None, 
-                                   rewards=None, next_observations=None, dones=None, returns=None, 
-                                   env_ts=None, attention_masks=None, **kwargs):
-        """Compute critic loss for all agents together (centralized)"""
-        
-        batch_size = len(x)
-        cond = {"history_trajectory": history_trajectory}
-        # Encode trajectory for each agent and average the conditions
-        trajectory_conditions = []
-        for agent_idx in range(self.n_agents):
-            agent_condition = self.encode_trajectory(history_trajectory, agent_idx=agent_idx)
-            trajectory_conditions.append(agent_condition)
-        trajectory_conditions = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1).detach()
-        actions, pattern_latents = self.conditional_sample(cond, return_diffusion=True, verbose=False)
-        pattern_latents_flat = pattern_latents.view(batch_size, -1)
-
-        # Compute current critic values
-        critic_input = torch.cat([pattern_latents_flat, trajectory_conditions], dim=-1)
-        critic_current = self.critic_function(critic_input)
-        rewards = rewards.view(batch_size, -1).mean(dim=-1, keepdim=True)
-        critic_loss = F.mse_loss(critic_current, rewards)
-        info = {}
-        info["critic_loss"] = critic_loss.item()
-
-        return critic_loss, info
+        return pattern_q_loss_weighted, policy_loss_weighted, info

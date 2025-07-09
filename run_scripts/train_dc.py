@@ -191,6 +191,8 @@ def main(Config, RUN):
         "save_checkpoints": Config.save_checkpoints,
         "update_ema_every": Config.update_ema_every,
         "q_lr": Config.q_lr,
+        "q_pattern_lr": Config.q_pattern_lr,
+        "q_pretrain_steps": Config.q_pretrain_steps,
     }
     
     # Add trainer-specific parameters
@@ -279,7 +281,8 @@ def main(Config, RUN):
     # -----------------------------------------------------------------------------#
 
     n_epochs = int((Config.n_train_steps - trainer.step) // Config.n_steps_per_epoch)
-
+    if Config.q_pretrain_steps > 0:
+        trainer.pretrain_q_function(n_train_steps=Config.q_pretrain_steps)
     for i in range(n_epochs):
         logger.print(f"Epoch {i} / {n_epochs} | {logger.prefix}")
         trainer.train(n_train_steps=Config.n_steps_per_epoch)

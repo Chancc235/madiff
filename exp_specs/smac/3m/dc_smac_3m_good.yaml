@@ -10,12 +10,14 @@ constants:
   q_weight: 1.0  # Weight for Q-learning loss
   policy_weight: 0.001  # Weight for policy optimization loss
   diversity_weight: 1.0
-  q_lr: 0.001
-  learning_rate: 0.000001
+  q_lr: 0.0001
+  q_pattern_lr: 0.0001
+  q_pretrain_steps: 2000
+  learning_rate: 0.00001
 
-  n_steps_per_epoch: 300 
-  n_train_steps:  6000
-  batch_size: 1024 
+  n_steps_per_epoch: 2000 
+  n_train_steps:  40000
+  batch_size: 512 
   gradient_accumulate_every: 1
   ema_decay: 0.95
   update_ema_every: 5
@@ -39,20 +41,20 @@ constants:
   history_horizon: 30
   n_diffusion_steps: 100
   use_ddim_sample: True
-  n_ddim_steps: 20
+  n_ddim_steps: 15
 
   returns_condition: True
   predict_epsilon: True
-  hidden_dim: 256
+  hidden_dim: 512
   condition_dropout: 0.1
   condition_guidance_w: 1.2
   clip_denoised: True
   renderer: "utils.SMACRenderer"
 
 
-  trajectory_latent_dim: 64
-  pattern_latent_dim: 64
-  pattern_num_layers: 2
+  trajectory_latent_dim: 128
+  pattern_latent_dim: 128
+  pattern_num_layers: 3
   pattern_dropout: 0.1
 
   # VAE 预训练参数
@@ -65,7 +67,7 @@ constants:
   
   # TrajectoryEncoder sequence model parameters
   trajectory_sequence_model: "transformer"  # Options: "transformer", "lstm", "gru"
-  trajectory_num_layers: 2
+  trajectory_num_layers: 3
   trajectory_num_heads: 2
   trajectory_dropout: 0.1
   
@@ -88,8 +90,8 @@ constants:
   include_env_ts: true
 
   # training
-  log_freq: 150
-  save_freq: 300
+  log_freq: 500
+  save_freq: 2000
   sample_freq: 0 
   n_saves: 2
   save_parallel: False
@@ -100,7 +102,7 @@ constants:
   evaluator: "utils.VAEDiffusionEvaluator"  # CHANGED: Use VAE-specific evaluator
   num_eval: 20
   num_envs: 10
-  eval_freq: 300
+  eval_freq: 2000
   test_ret: 1.0
   vae_learning_rate: 0.001
 

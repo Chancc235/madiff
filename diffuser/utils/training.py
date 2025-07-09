@@ -61,6 +61,8 @@ class Trainer(object):
         bucket=None,
         train_device="cuda",
         q_lr=0.0001,
+        q_pattern_lr=0.0001,
+        q_pretrain_steps=0,
         save_checkpoints=False,
     ):
         super().__init__()
@@ -87,6 +89,8 @@ class Trainer(object):
         self.eval_freq = eval_freq
         self.save_parallel = save_parallel
         self.q_lr = q_lr
+        self.q_pattern_lr = q_pattern_lr
+        self.q_pretrain_steps = q_pretrain_steps
         
         self.batch_size = train_batch_size
         self.gradient_accumulate_every = gradient_accumulate_every

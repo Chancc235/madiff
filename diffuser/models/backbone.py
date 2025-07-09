@@ -262,7 +262,8 @@ class DiffusionBackbone(nn.Module):
                 out_act_fn=nn.ReLU()
             ) for _ in range(n_layers)
         ])
-        
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.batch_norm = nn.ModuleList([nn.BatchNorm1d(hidden_dim) for _ in range(n_layers)])
         # Output projection
         self.output_proj = nn.Linear(hidden_dim, action_dim)
         
@@ -324,6 +325,13 @@ class DiffusionBackbone(nn.Module):
         # Apply temporal layers (each agent processed independently)
         for i, temp_layer in enumerate(self.temporal_layers):
             x = temp_layer(x, t_emb_expanded)
+            # Reshape for BatchNorm1d: [batch, n_agents, hidden_dim] -> [batch*n_agents, hidden_dim]
+            batch_size, n_agents, hidden_dim = x.shape
+            x_reshaped = x.view(batch_size * n_agents, hidden_dim)
+            x_reshaped = self.batch_norm[i](x_reshaped)
+            # Reshape back: [batch*n_agents, hidden_dim] -> [batch, n_agents, hidden_dim]
+            x = x_reshaped.view(batch_size, n_agents, hidden_dim)
+        x = self.layer_norm(x)
         
         # Output projection
         output = self.output_proj(x)  # [batch, n_agents, action_dim]
