@@ -38,6 +38,9 @@ class OfflineRLTrainer(Trainer):
 
     def pretrain_q_function(self, n_train_steps):
         """Pretrain Q-function"""
+        # Ensure model is in training mode
+        self.model.train()
+        
         for step_idx in range(n_train_steps):
             warmup_batch = next(self.dataloader)
             warmup_batch = self.batch_to_device(warmup_batch)
@@ -54,6 +57,9 @@ class OfflineRLTrainer(Trainer):
 
     def train(self, n_train_steps):
         """Training loop for offline RL"""
+        # Ensure model is in training mode
+        self.model.train()
+        
         for step_idx in range(n_train_steps):
             # Initialize for this training step
             step_losses = []  # Store loss for each gradient accumulation step
@@ -152,7 +158,16 @@ class OfflineRLTrainer(Trainer):
             if self.eval_freq > 0 and self.step % self.eval_freq == 0:
                 logger.print(f"[ OfflineRLTrainer ] Running evaluation at step {self.step}", color="green")
                 if self.evaluator is not None:
+                    # Set model to evaluation mode before evaluation
+                    self.model.eval()
+                    if hasattr(self, 'ema_model'):
+                        self.ema_model.eval()
+                    
                     self.evaluate()
+                    
+                    # Set model back to training mode after evaluation
+                    self.model.train()
+                    
                     logger.print(f"[ OfflineRLTrainer ] Evaluation completed at step {self.step}", color="green")
                 else:
                     logger.print(f"[ OfflineRLTrainer ] Warning: evaluator is None, skipping evaluation", color="yellow")
@@ -179,7 +194,15 @@ class OfflineRLTrainer(Trainer):
 
             # Sampling and visualization
             if self.sample_freq and self.step % self.sample_freq == 0:
+                # Set model to evaluation mode for sampling
+                self.model.eval()
+                if hasattr(self, 'ema_model'):
+                    self.ema_model.eval()
+                
                 self.render_samples()
+                
+                # Set model back to training mode
+                self.model.train()
 
             self.step += 1
     

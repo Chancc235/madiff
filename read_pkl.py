@@ -29,7 +29,7 @@ def extract_metrics_from_log(log_file_path):
     return metrics_data
 
 # 从训练日志中提取数据
-root_dir = "./logs/dc_smac/3m-Good/" + "hh_30-bcw_10.0-qw_1.0-pw_0.001-guidew_1.2-10015/10015"
+root_dir = "./logs/dc_smac/3m-Good/" + "hh_30-bcw_1.0-qw_1.0-pw_0.1-guidew_1.2-lr_1e-06-n_ddim_15-10012/10012"
 log_file = f"{root_dir}/outputs.log"
 metrics_data = extract_metrics_from_log(log_file)
 

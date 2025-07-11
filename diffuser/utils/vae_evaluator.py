@@ -317,7 +317,14 @@ class VAEDiffusionEvaluator:
                     legal_actions = self.env_list[env_idx].get_legal_actions()  # [n_agents, action_dim]
                     actions_masked = actions.copy()
                     actions_masked[np.where(legal_actions.astype(int) == 0)] = -np.inf
-                    actions = np.argmax(actions_masked, axis=-1)  # [n_agents]
+                    
+                    # Apply softmax to get probabilities and sample
+                    actions_prob = np.exp(actions_masked - np.max(actions_masked, axis=-1, keepdims=True))
+                    actions_prob = actions_prob / np.sum(actions_prob, axis=-1, keepdims=True)
+                    
+                    # Sample actions based on probabilities
+                    actions = np.array([np.random.choice(actions_prob.shape[-1], p=prob) 
+                                      for prob in actions_prob])  # [n_agents]
                 else:
                     actions = self.normalizer.unnormalize(actions, "actions")
                 

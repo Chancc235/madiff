@@ -162,6 +162,7 @@ def main(Config, RUN):
         data_encoder=data_encoder,
         decentralized=getattr(Config, 'decentralized_execution', False),
         discrete_action=getattr(Config, 'discrete_action', False),  # Add discrete_action parameter
+        n_ddim_steps=getattr(Config, 'n_ddim_steps', 15),
     )
 
     # Choose trainer based on diffusion type (offline only)
