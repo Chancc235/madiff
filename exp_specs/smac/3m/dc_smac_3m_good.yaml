@@ -16,14 +16,14 @@ constants:
   learning_rate: 0.00001
 
   n_steps_per_epoch: 100 
-  n_train_steps:  2000
+  n_train_steps: 2000
   batch_size: 512 
   gradient_accumulate_every: 1
   ema_decay: 0.995
   update_ema_every: 2
 
   # misc
-  seed: 10013
+  seed: 10015
   job_name: "{dataset}/hh_{history_horizon}-bcw_{bc_weight}-qw_{q_weight}-pw_{policy_weight}-guidew_{condition_guidance_w}-lr_{learning_rate}-n_ddim_{n_ddim_steps}-{seed}"
   horizon: 1
   returns_scale: 20
@@ -38,10 +38,10 @@ constants:
   # model - use DiffusionBackbone for testing
   model: "models.DiffusionBackbone"
   diffusion: "models.OfflineDiffusionRL"
-  history_horizon: 30
-  n_diffusion_steps: 10
+  history_horizon: 10
+  n_diffusion_steps: 50
   use_ddim_sample: True
-  n_ddim_steps: 2
+  n_ddim_steps: 5
 
   returns_condition: True
   predict_epsilon: True
@@ -83,7 +83,7 @@ constants:
   max_n_episodes: 50000
   preprocess_fns: []
   use_padding: True
-  discount: 0.99
+  discount: 0.95
   max_path_length: 60
   termination_penalty: 0.0
   include_returns: true

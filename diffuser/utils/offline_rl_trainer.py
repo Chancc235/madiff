@@ -49,11 +49,11 @@ class OfflineRLTrainer(Trainer):
             q_loss.backward()
             self.q_optimizer.step()
             if step_idx % 100 == 0:
-                print(f"Q pretrain step {step_idx}/{n_train_steps}, Q loss: {q_loss.item():.4f}")
-
+                logger.print(f"Q pretrain step {step_idx}/{n_train_steps}, Q loss: {q_loss.item():.4f}")
             if step_idx % self.target_update_freq == 0:
                 self.model.target_q_function.load_state_dict(self.model.q_function.state_dict())
-        print("Q-function pretraining completed")
+        logger.print("Q-function pretraining completed")
+
 
     def train(self, n_train_steps):
         """Training loop for offline RL"""
@@ -79,9 +79,9 @@ class OfflineRLTrainer(Trainer):
                     self.pattern_q_optimizer.step()
                     
                     if warmup_i % 100 == 0:
-                        print(f"Pattern Q warm-up step {warmup_i}/{q_warmup_steps}, Q loss: {pattern_q_loss.item():.4f}")
+                        logger.print(f"Pattern Q warm-up step {warmup_i}/{q_warmup_steps}, Q loss: {pattern_q_loss.item():.4f}")
                 
-                print(f"Pattern Q-function warm-up completed after {q_warmup_steps} steps")
+                logger.print(f"Pattern Q-function warm-up completed after {q_warmup_steps} steps")
                 self.pattern_q_optimizer.zero_grad()
             scale_loss_sum = 0    
             for i in range(self.gradient_accumulate_every):

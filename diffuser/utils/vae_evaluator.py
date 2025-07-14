@@ -246,12 +246,10 @@ class VAEDiffusionEvaluator:
                     # Normalize previous observations
                     prev_obs_normalized = self.normalizer.normalize(prev_obs_list[i], "observations")
                     
-                    # For discrete actions, we need to handle the action format
+                    # For discrete actions, prev_actions_list[i] is already one-hot encoded
                     if self.discrete_action:
-                        if len(prev_actions_list[i].shape) == 1:  # [n_agents]
-                            prev_actions_formatted = prev_actions_list[i].reshape(Config.n_agents, 1)
-                        else:
-                            prev_actions_formatted = prev_actions_list[i]
+                        # prev_actions_list[i] is already one-hot encoded from the previous step
+                        prev_actions_formatted = prev_actions_list[i]
                     else:
                         # For continuous actions, normalize them
                         prev_actions_formatted = self.normalizer.normalize(prev_actions_list[i], "actions")
@@ -266,7 +264,7 @@ class VAEDiffusionEvaluator:
                     history_array = np.stack(list(history_trajectory_queues[i]), axis=0)
                     batch_history_trajectory.append(history_array)
                 else:
-                    # Create minimal history using current observation
+                    # Create minimal history using current observation and zero actions
                     minimal_history = np.zeros((max(history_horizon, 1), Config.n_agents, observation_dim + model_action_dim))
                     # Fill the last timestep with current observation
                     minimal_history[-1, :, :observation_dim] = obs_normalized
@@ -350,7 +348,7 @@ class VAEDiffusionEvaluator:
                 obs[env_idx] = next_obs
                 if done.all():
                     dones[env_idx] = 1
-                    if Config.env_type == "smac" or Config.env_type == "smacv2" and "battle_won" in info:
+                    if (Config.env_type == "smac" or Config.env_type == "smacv2") and "battle_won" in info:
                         episode_wins[env_idx] = info["battle_won"]
                         
                     if self.verbose:
@@ -366,4 +364,4 @@ class VAEDiffusionEvaluator:
         if Config.env_type == "smac" or Config.env_type == "smacv2":
             return episode_rewards, episode_wins
         else:
-            return episode_rewards, 
+            return episode_rewards 

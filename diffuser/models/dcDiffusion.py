@@ -293,7 +293,7 @@ class OfflineDiffusionRL(nn.Module):
                 
                 # Stack to get [batch, n_agents, latent_dim]
                 pattern_latents = torch.stack(pattern_latents_list, dim=1)
-                return actions, pattern_latents
+                return actions, pattern_latents, trajectory_condition
             else:
                 return actions
     
@@ -452,7 +452,7 @@ class OfflineDiffusionRL(nn.Module):
                 # Create condition dict for sampling with updated trajectory
                 next_cond = {"history_trajectory": updated_trajectory}
                 
-            actions_next_flat = self.conditional_sample(next_cond, verbose=False).view(batch_size, -1)
+            actions_next_flat = self.conditional_sample(next_cond, verbose=False).view(batch_size, -1).detach()
 
 
             # Concatenate actions and average pool conditions
@@ -476,24 +476,18 @@ class OfflineDiffusionRL(nn.Module):
         batch_size = obs.shape[0]
         device = obs.device
         cond = {"history_trajectory": history_trajectory}
-        
-        # Encode trajectory for each agent and average the conditions
-        trajectory_conditions = []
-        pattern_latents_list = []
-        for agent_idx in range(self.n_agents):
-            agent_condition = self.encode_trajectory(history_trajectory, agent_idx=agent_idx)
-            trajectory_conditions.append(agent_condition)
-        trajectory_conditions = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1).detach()
 
+        # Encode trajectory for each agent and average the conditions
         obs_last = obs
         rewards_last = rewards
         dones_last = dones
 
         obs_flat = obs_last.view(batch_size, -1)
-        actions, pattern_latents = self.conditional_sample(cond, return_diffusion=True, verbose=False)
+        actions, pattern_latents, trajectory_conditions = self.conditional_sample(cond, return_diffusion=True, verbose=False)
         actions_flat = actions.view(batch_size, -1)
         pattern_latents_flat = pattern_latents.view(batch_size, -1).detach()
 
+        trajectory_conditions = trajectory_conditions.view(batch_size, -1).detach()
         q_input = torch.cat([obs_flat, actions_flat, trajectory_conditions], dim=-1)
         pattern_q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_conditions], dim=-1)
 
@@ -517,7 +511,7 @@ class OfflineDiffusionRL(nn.Module):
             cond = {"history_trajectory": history_trajectory}
 
             # Enable gradients for policy optimization
-            agent_actions, pattern_latents = self.conditional_sample(
+            agent_actions, pattern_latents, trajectory_conditions = self.conditional_sample(
                 cond, return_diffusion=True, enable_grad=True
             )
             if self.discrete_action:
@@ -550,14 +544,7 @@ class OfflineDiffusionRL(nn.Module):
             # Flatten for Q-function input  
             obs_flat = obs.view(batch_size, -1)
             pattern_latents_flat = policy_actions_latents.view(batch_size, -1)
-
-            trajectory_conditions = []
-            for agent_idx in range(self.n_agents):
-                agent_condition = self.encode_trajectory(history_trajectory, agent_idx=agent_idx)
-                trajectory_conditions.append(agent_condition)
-
-            trajectory_condition_flat = torch.stack(trajectory_conditions, dim=1).view(batch_size, -1)
-
+            trajectory_condition_flat = trajectory_conditions.view(batch_size, -1)
             # Compute current Q-values
             pattern_q_input = torch.cat([obs_flat, pattern_latents_flat, trajectory_condition_flat], dim=1)
             pattern_q_value = self.pattern_q_function(pattern_q_input).detach() + 1e-8
