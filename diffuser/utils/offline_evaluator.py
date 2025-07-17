@@ -9,7 +9,7 @@ import diffuser.utils as utils
 from diffuser.utils.arrays import batch_to_device, to_np
 from diffuser.utils.launcher_util import build_config_from_dict
 from diffuser.utils.training import cycle
-
+from diffuser.utils import patch
 
 class MADOfflineEvaluator:
     def init(

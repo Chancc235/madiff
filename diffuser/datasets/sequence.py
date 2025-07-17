@@ -432,17 +432,10 @@ class VAESequenceDataset(SequenceDataset):
         super().__init__(*args, **kwargs)
         
     def __getitem__(self, idx: int, agent_idx: Optional[int] = None):
-        if self.agent_condition_type == "single":
-            path_ind, start, end, mask_end = self.indices[idx // self.n_agents]
-            agent_mask = np.zeros(self.n_agents, dtype=bool)
-            agent_mask[idx % self.n_agents] = 1
-        elif self.agent_condition_type == "all":
-            path_ind, start, end, mask_end = self.indices[idx]
-            agent_mask = np.ones(self.n_agents, dtype=bool)
-        elif self.agent_condition_type == "random":
-            path_ind, start, end, mask_end = self.indices[idx]
-            agent_mask = np.random.randint(0, 2, self.n_agents, dtype=bool)
-
+        # Only support "all" mode - all agents are active
+        path_ind, start, end, mask_end = self.indices[idx]
+        agent_mask = np.ones(self.n_agents, dtype=bool)
+    
         # shift by `self.history_horizon`
         history_start = start
         start = history_start + self.history_horizon
@@ -474,32 +467,16 @@ class VAESequenceDataset(SequenceDataset):
                 # Extract actions and observations from history
                 history_actions = history_trajectory[:, :, :1]  # scalar indices
                 history_observations = history_trajectory[:, :, 1:]  # observations
-                
                 # Convert scalar action indices to one-hot encoding
-                history_actions_onehot = np.zeros((history_actions.shape[0], history_actions.shape[1], self.action_dim), dtype=np.float32)
-                for t in range(history_actions.shape[0]):
-                    for agent in range(history_actions.shape[1]):
-                        action_idx = int(history_actions[t, agent, 0])
-                        if 0 <= action_idx < self.action_dim:
-                            history_actions_onehot[t, agent, action_idx] = 1.0
+                history_actions_onehot = np.eye(self.action_dim)[np.clip(history_actions.astype(int), 0, self.action_dim-1).squeeze(-1)]
                 
                 # Reconstruct history trajectory with one-hot actions
                 history_trajectory = np.concatenate([history_actions_onehot, history_observations], axis=-1)
-        else:
-            # If no history, use zero padding with correct action dimension
-            if self.discrete_action and self.use_action:
-                # Use one-hot action dimension for consistency
-                action_dim_for_history = self.action_dim
-            else:
-                action_dim_for_history = actions.shape[-1] if self.use_action else 0
-            
-            total_dim = action_dim_for_history + observations.shape[-1]
-            history_trajectory = np.zeros((1, self.n_agents, total_dim), dtype=np.float32)
 
-        # Condition setup
+        # Condition setup - all agents are active
         cond_masks = self.mask_generator(observations.shape, agent_mask)
         cond_observations = observations.copy()
-        cond_observations[: self.history_horizon, ~agent_mask] = 0.0
+        # No need to zero out observations since all agents are active
         cond = {
             "x": cond_observations,
             "masks": cond_masks,
@@ -518,10 +495,13 @@ class VAESequenceDataset(SequenceDataset):
         # Prepare next observations, rewards, and dones for Q-learning
         if end < self.fields.normed_observations.shape[1]:
             next_observations = self.fields.normed_observations[path_ind, history_start+1:end+1]
+            next_actions = self.fields.normed_actions[path_ind, history_start+1:end+1]
         else:
             # If at end of trajectory, duplicate last observation
             next_observations = observations.copy()
+            next_actions = actions.copy()
             next_observations[:-1] = observations[1:]  # Shift observations
+            next_actions[:-1] = actions[1:]  # Shift actions
             
         # Extract rewards if available
         if hasattr(self.fields, 'rewards') and self.fields.rewards is not None:
@@ -544,6 +524,7 @@ class VAESequenceDataset(SequenceDataset):
             "actions": actions,    # Actions only
             "observations": observations,  # Observations only
             "next_observations": next_observations,  # Next observations for Q-learning
+            "next_actions": next_actions,  # Next actions for Q-learning
             "rewards": rewards,    # Rewards for Q-learning
             "dones": dones,        # Done flags for Q-learning
             "history_trajectory": history_trajectory,  # Historical trajectory for conditioning
@@ -573,3 +554,7 @@ class VAESequenceDataset(SequenceDataset):
             ]
 
         return batch
+
+    def __len__(self):
+        # Only support "all" mode - return length of indices
+        return len(self.indices)

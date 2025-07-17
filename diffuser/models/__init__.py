@@ -2,6 +2,7 @@ from .bc import BehaviorClone
 from .diffusion import GaussianDiffusion, ValueDiffusion
 from .backbone import TrajectoryEncoder, DiffusionBackbone, PatternEncoder
 from .dcDiffusion import OfflineDiffusionRL
+from .ccDiffusion import CCDiffusion
 from .ma_nontemporal_wrappers import IndependentBCMLPnet, SharedBCMLPnet
 from .ma_temporal import (
     ConcatTemporalValue,

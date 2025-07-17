@@ -169,6 +169,9 @@ class TrajectoryEncoder(nn.Module):
         batch_size = trajectory.shape[0]
         sequence_input = trajectory[:, :, agent_idx, :]
         
+        # Ensure input is float32 to match model weights
+        sequence_input = sequence_input.float()
+        
         # Input projection: [batch, seq_len, hidden_dim]
         x = self.input_proj(sequence_input)
         if self.sequence_model == "transformer":
@@ -205,7 +208,7 @@ class DiffusionBackbone(nn.Module):
     Simplified diffusion backbone model for generating action latents
     This is a lightweight version that works directly with latent space
     """
-    agent_share_parameters = True
+    agent_share_parameters = False  # 改为False，每个agent独立参数
     
     def __init__(
         self,
@@ -232,40 +235,53 @@ class DiffusionBackbone(nn.Module):
         # Input dimension: action latents + trajectory condition
         input_dim = action_dim + trajectory_latent_dim
         
-        # Time embedding
-        self.time_mlp = nn.Sequential(
-            SinusoidalPosEmb(time_embed_dim // 4),
-            nn.Linear(time_embed_dim // 4, time_embed_dim),
-            nn.ReLU(),
-            nn.Linear(time_embed_dim, time_embed_dim),
-        )
-        
-        # Returns conditioning
-        if self.returns_condition:
-            self.returns_mlp = nn.Sequential(
-                nn.Linear(1, time_embed_dim // 2),
+        # Time embedding for each agent
+        self.time_mlp = nn.ModuleList([
+            nn.Sequential(
+                SinusoidalPosEmb(time_embed_dim // 4),
+                nn.Linear(time_embed_dim // 4, time_embed_dim),
                 nn.ReLU(),
-                nn.Linear(time_embed_dim // 2, time_embed_dim),
-            )
+                nn.Linear(time_embed_dim, time_embed_dim),
+            ) for _ in range(n_agents)
+        ])
+        
+        # Returns conditioning for each agent
+        if self.returns_condition:
+            self.returns_mlp = nn.ModuleList([
+                nn.Sequential(
+                    nn.Linear(1, time_embed_dim // 2),
+                    nn.ReLU(),
+                    nn.Linear(time_embed_dim // 2, time_embed_dim),
+                ) for _ in range(n_agents)
+            ])
             self.mask_dist = torch.distributions.Bernoulli(probs=0.1)
         
-        # Input projection
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-        
-        # Temporal processing layers
-        self.temporal_layers = nn.ModuleList([
-            TemporalMlpBlock(
-                dim_in=hidden_dim,
-                dim_out=hidden_dim,
-                embed_dim=time_embed_dim,
-                act_fn=nn.ReLU(),
-                out_act_fn=nn.ReLU()
-            ) for _ in range(n_layers)
+        # Input projection for each agent
+        self.input_proj = nn.ModuleList([
+            nn.Linear(input_dim, hidden_dim) for _ in range(n_agents)
         ])
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-        self.batch_norm = nn.ModuleList([nn.BatchNorm1d(hidden_dim) for _ in range(n_layers)])
-        # Output projection
-        self.output_proj = nn.Linear(hidden_dim, action_dim)
+        
+        # Independent processing layers for each agent
+        self.agent_layers = nn.ModuleList([
+            nn.ModuleList([
+                nn.ModuleDict({
+                    'mlp': TemporalMlpBlock(
+                        dim_in=hidden_dim,
+                        dim_out=hidden_dim,
+                        embed_dim=time_embed_dim,
+                        act_fn=nn.ReLU(),
+                        out_act_fn=nn.ReLU()
+                    ),
+                    'layer_norm': nn.LayerNorm(hidden_dim),
+                    'dropout': nn.Dropout(0.1)
+                }) for _ in range(n_layers)
+            ]) for _ in range(n_agents)
+        ])
+        
+        # Output projection for each agent
+        self.output_proj = nn.ModuleList([
+            nn.Linear(hidden_dim, action_dim) for _ in range(n_agents)
+        ])
         
     def forward(
         self, 
@@ -280,63 +296,67 @@ class DiffusionBackbone(nn.Module):
     ):
         """
         Forward pass through diffusion backbone
-        x: [batch, n_agents, action_dim + trajectory_latent_dim] for independent agent denoising
+        x: [batch, n_agents, action_dim + trajectory_latent_dim] for independent agent processing
         t: [batch] timestep
         returns: [batch, 1] return values for conditioning (optional)
-        agent_idx: Index of agent for decentralized mode
         """
+        # Ensure input is float32 to match model weights
+        x = x.float()
+        t = t.float()
+        if returns is not None:
+            returns = returns.float()
+            
         batch_size, n_agents, input_dim = x.shape
         
-        # Time embedding
-        t_emb = self.time_mlp(t)  # [batch, time_embed_dim]
-        
-        # Returns conditioning
-        if self.returns_condition:
-            if returns is not None and not force_dropout:
-                returns_scalar = returns.float().view(returns.shape[0], -1).mean(dim=-1, keepdim=True)  # [batch, 1]
-                
-                # Ensure returns_scalar is always [batch, 1]
-                if returns_scalar.shape[-1] != 1:
-                    returns_scalar = returns_scalar.mean(dim=-1, keepdim=True)
-                
-                # Compute returns embedding
-                returns_emb = self.returns_mlp(returns_scalar.float())
-                
-                # During training, randomly drop out returns with probability 0.1 for CFG
-                if self.training:
-                    mask = self.mask_dist.sample((batch_size,)).to(returns.device)
-                    # mask is 1 with prob 0.9 (keep returns), 0 with prob 0.1 (drop returns)
-                    returns_emb = returns_emb * mask.unsqueeze(-1)
-            else:
-                # Zero out returns embedding when force_dropout or returns is None
-                returns_emb = torch.zeros(batch_size, self.time_embed_dim, device=x.device)
+        # Process each agent independently
+        outputs = []
+        for agent_idx in range(n_agents):
+            # Extract agent-specific input
+            agent_x = x[:, agent_idx:agent_idx+1, :]  # [batch, 1, input_dim]
             
-            # Combine time and returns embeddings
-            t_emb = t_emb + returns_emb
+            # Time embedding for this agent
+            t_emb = self.time_mlp[agent_idx](t)  # [batch, time_embed_dim]
+            
+            # Returns conditioning for this agent
+            if self.returns_condition:
+                if returns is not None and not force_dropout:
+                    returns_scalar = returns.float().view(returns.shape[0], -1).mean(dim=-1, keepdim=True)  # [batch, 1]
+                    
+                    # Ensure returns_scalar is always [batch, 1]
+                    if returns_scalar.shape[-1] != 1:
+                        returns_scalar = returns_scalar.mean(dim=-1, keepdim=True)
+                    
+                    # Compute returns embedding for this agent
+                    returns_emb = self.returns_mlp[agent_idx](returns_scalar.float())
+                    
+                    # During training, randomly drop out returns with probability 0.1 for CFG
+                    if self.training:
+                        mask = self.mask_dist.sample((batch_size,)).to(returns.device)
+                        # mask is 1 with prob 0.9 (keep returns), 0 with prob 0.1 (drop returns)
+                        returns_emb = returns_emb * mask.unsqueeze(-1)
+                else:
+                    # Zero out returns embedding when force_dropout or returns is None
+                    returns_emb = torch.zeros(batch_size, self.time_embed_dim, device=x.device)
+                
+                # Combine time and returns embeddings
+                t_emb = t_emb + returns_emb
+            
+            # Input projection for this agent
+            agent_x = self.input_proj[agent_idx](agent_x)  # [batch, 1, hidden_dim]
+            
+            # Expand time embedding for this agent
+            t_emb_expanded = t_emb.unsqueeze(1)  # [batch, 1, time_embed_dim]
+            
+            # Apply independent processing layers for this agent
+            for layer in self.agent_layers[agent_idx]:
+                # MLP processing with time embedding
+                agent_x = layer['layer_norm'](agent_x + layer['dropout'](layer['mlp'](agent_x, t_emb_expanded)))
+            
+            # Output projection for this agent
+            agent_output = self.output_proj[agent_idx](agent_x)  # [batch, 1, action_dim]
+            outputs.append(agent_output)
         
-        
-        # Input projection
-        x = self.input_proj(x)  # [batch, n_agents, hidden_dim]
-        
-        # Expand time embedding for all agents
-        # t_emb: [batch, n_agents, time_embed_dim] -> [batch * n_agents, time_embed_dim]
-        t_emb_expanded = t_emb.unsqueeze(1).expand(batch_size, n_agents, -1)
-        
-        # Apply temporal layers (each agent processed independently)
-        for i, temp_layer in enumerate(self.temporal_layers):
-            x = temp_layer(x, t_emb_expanded)
-            # Reshape for BatchNorm1d: [batch, n_agents, hidden_dim] -> [batch*n_agents, hidden_dim]
-            batch_size, n_agents, hidden_dim = x.shape
-            x_reshaped = x.view(batch_size * n_agents, hidden_dim)
-            x_reshaped = self.batch_norm[i](x_reshaped)
-            # Reshape back: [batch*n_agents, hidden_dim] -> [batch, n_agents, hidden_dim]
-            x = x_reshaped.view(batch_size, n_agents, hidden_dim)
-        x = self.layer_norm(x)
-        
-        # Output projection
-        output = self.output_proj(x)  # [batch, n_agents, action_dim]
-        
-        # Reshape back to [batch, n_agents, action_dim]
-        output = output.view(batch_size, n_agents, -1)
+        # Concatenate all agent outputs
+        output = torch.cat(outputs, dim=1)  # [batch, n_agents, action_dim]
         
         return output 

@@ -12,7 +12,7 @@ from diffuser.models.helpers import Losses, apply_conditioning
 from diffuser.models.backbone import TrajectoryEncoder, PatternEncoder
 
 
-class OfflineDiffusionRL(nn.Module):
+class CCDiffusion(nn.Module):
     """Offline Diffusion-based RL with VAE for action generation"""
     agent_share_parameters = True
     
@@ -101,7 +101,7 @@ class OfflineDiffusionRL(nn.Module):
             dropout=kwargs.get('trajectory_dropout', 0.1),
         )
         self.pattern_encoder = PatternEncoder(
-            action_dim=action_latent_dim,
+            action_dim=action_dim,
             hidden_dim=hidden_dim,
             latent_dim=pattern_latent_dim,
             num_layers=kwargs.get('pattern_num_layers', 2),
@@ -155,18 +155,7 @@ class OfflineDiffusionRL(nn.Module):
             nn.Mish(),
             nn.Linear(hidden_dim, 1),
         )
-        self.action_latent_encoder = nn.Sequential(
-            nn.Linear(action_dim, action_latent_dim * 4),
-            nn.LayerNorm(action_latent_dim * 4),
-            nn.Mish(),
-            nn.Linear(action_latent_dim * 4, action_latent_dim * 2),
-        )
-        self.action_latent_decoder = nn.Sequential(
-            nn.Linear(action_latent_dim, action_latent_dim),
-            nn.LayerNorm(action_latent_dim),
-            nn.Mish(),
-            nn.Linear(action_latent_dim, action_dim),
-        )
+
         # Noise scheduler
         self.n_timesteps = int(n_timesteps)
         self.clip_denoised = clip_denoised
@@ -255,7 +244,7 @@ class OfflineDiffusionRL(nn.Module):
                 trajectory_condition = torch.stack(trajectory_conditions, dim=1).view(batch_size, self.n_agents, -1)
                 batch_size = cond["history_trajectory"].shape[0]
             
-                shape = (batch_size, self.n_agents, self.action_latent_dim)
+                shape = (batch_size, self.n_agents, self.action_dim)
 
             device = trajectory_condition.device
             if self.use_ddim_sample:
@@ -289,7 +278,7 @@ class OfflineDiffusionRL(nn.Module):
                     
             progress.close()
             # this is logits of action when action is discrete
-            actions = self.action_latent_decoder(x)
+            actions = x
             
             if return_diffusion:
                 diffusion = torch.stack(diffusion, dim=1)
@@ -355,13 +344,8 @@ class OfflineDiffusionRL(nn.Module):
 
         # Enable gradients for BC loss
         with torch.enable_grad():
-            # Only generate single timestep actions for BC loss
-            if self.discrete_action:
-                shape = (batch_size, self.n_agents, self.action_latent_dim)
-            else:
-                shape = (batch_size, self.n_agents, self.action_dim)
+            shape = (batch_size, self.n_agents, self.action_dim)
 
-            
             if self.use_ddim_sample:
                 scheduler = self.ddim_noise_scheduler
             else:
@@ -376,28 +360,13 @@ class OfflineDiffusionRL(nn.Module):
                     x, ts, trajectory_condition, None, None, None
                 )
                 x = scheduler.step(model_output, t, x).prev_sample
-            if self.discrete_action:
-                generated_actions = self.action_latent_decoder(x)
-            else:
-                generated_actions = x
+            generated_actions = x
             # For discrete actions, generated_actions are logits, don't apply softmax for cross entropy
-        
-        # Use appropriate loss based on action type
-        if hasattr(self, 'discrete_action') and self.discrete_action:
-            # For discrete actions, use cross entropy loss
-            # generated_actions are logits [batch, n_agents, action_dim]
-            # target_actions are class indices [batch, n_agents]
-            # Reshape to [batch*n_agents, action_dim] and [batch*n_agents] for vectorized cross entropy
-            generated_logits = generated_actions.view(-1, self.action_dim)  # [batch*n_agents, action_dim]
-            target_indices = target_actions.view(-1)  # [batch*n_agents]
-            bc_loss = F.cross_entropy(generated_logits, target_indices)
-        else:
-            # For continuous actions, use MSE loss
-            bc_loss = F.mse_loss(generated_actions, target_actions)
+        bc_loss = F.mse_loss(generated_actions, target_actions)
         
         return bc_loss
     
-    def q_learning_loss(self, obs, actions, rewards, next_obs, dones, history_trajectory):
+    def q_learning_loss(self, obs, actions, rewards, next_obs, next_actions, dones, history_trajectory):
         """Q-learning loss for value function training"""
         
         batch_size = obs.shape[0]
@@ -417,11 +386,6 @@ class OfflineDiffusionRL(nn.Module):
         next_obs_last = next_obs
         rewards_last = rewards
         dones_last = dones
-        if self.discrete_action:
-            action_indices = actions_last.squeeze(-1).long()
-            action_indices = torch.clamp(action_indices, 0, self.action_dim - 1)
-            actions_onehot = F.one_hot(action_indices, num_classes=self.action_dim).float()
-            actions_last = actions_onehot
 
         # Use all agents data directly
         obs_flat = obs_last.view(batch_size, -1)
@@ -451,20 +415,7 @@ class OfflineDiffusionRL(nn.Module):
             
             # Generate next actions with temperature sampling for better exploration
             next_cond = {"history_trajectory": updated_trajectory}
-            
-            # Use temperature sampling for more stable target computation
-            actions_next = self.conditional_sample(next_cond, verbose=False)
-            if self.discrete_action:
-                # For discrete actions, use softmax with temperature
-                actions_next = F.softmax(actions_next / 0.1, dim=-1)
-                # Sample from the distribution
-                actions_next_dist = torch.distributions.Categorical(actions_next)
-                actions_next_indices = actions_next_dist.sample()
-                # Convert to one-hot encoding
-                actions_next_onehot = F.one_hot(actions_next_indices, num_classes=self.action_dim).float()
-                actions_next_flat = actions_next_onehot.view(batch_size, -1)
-            else:
-                actions_next_flat = actions_next.view(batch_size, -1)
+            actions_next_flat = next_actions.view(batch_size, -1)
 
             # Concatenate actions and average pool conditions
             next_conditions_list = []
@@ -473,7 +424,6 @@ class OfflineDiffusionRL(nn.Module):
                 next_conditions_list.append(next_agent_condition)
             
             next_trajectory_condition = torch.stack(next_conditions_list, dim=1).view(batch_size, -1)
-            
             next_q_input = torch.cat([next_obs_flat, actions_next_flat, next_trajectory_condition], dim=1)
             next_q = self.target_q_function(next_q_input).detach()
             
@@ -619,14 +569,9 @@ class OfflineDiffusionRL(nn.Module):
             0, self.noise_scheduler.config.num_train_timesteps,
             (batch_size,), device=x.device,
         ).long()
-        mu, log_var = self.action_latent_encoder(actions).chunk(2, dim=-1)
-        # Sample from latent distribution
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        z = mu + eps * std
 
         diffusion_loss, info = self.p_losses(
-            z, trajectory_condition, t,
+            actions, trajectory_condition, t,
             returns, env_ts, attention_masks,
         )
 
@@ -686,7 +631,7 @@ class OfflineDiffusionRL(nn.Module):
 
 
     def compute_q_loss(self, x, actions, history_trajectory, cond, observations=None, 
-                      rewards=None, next_observations=None, dones=None, returns=None, 
+                      rewards=None, next_observations=None, next_actions=None, dones=None, returns=None, 
                       env_ts=None, attention_masks=None, **kwargs):
         """Compute Q-learning loss for all agents together (centralized)"""
         
@@ -702,9 +647,9 @@ class OfflineDiffusionRL(nn.Module):
             rewards_last = rewards[:, -1]  # [batch, n_agents, 1]
             dones_last = dones[:, -1]  # [batch, n_agents, 1]
             actions_last = actions[:, -1]  # [batch, n_agents, action_dim]
-
+            next_actions = next_actions[:, -1]  # [batch, n_agents, action_dim]
             # Compute Q-learning loss for all agents (centralized)
-            q_loss = self.q_learning_loss(obs_last, actions_last, rewards_last, next_obs_last, dones_last, history_trajectory)
+            q_loss = self.q_learning_loss(obs_last, actions_last, rewards_last, next_obs_last, next_actions, dones_last, history_trajectory)
             
             info["q_loss"] = q_loss.item() if torch.is_tensor(q_loss) else q_loss
         else:
@@ -763,46 +708,3 @@ class OfflineDiffusionRL(nn.Module):
         info = {**pattern_q_info, **policy_info}
         
         return pattern_q_loss_weighted, policy_loss_weighted, info
-
-    def compute_action_latent_loss(self, actions):
-        """Compute action latent loss for all agents together (centralized)"""
-        
-        mu, log_var = self.action_latent_encoder(actions).chunk(2, dim=-1)
-        # Sample from latent distribution
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        z = mu + eps * std
-        
-        # Reconstruct actions
-        reconstructed_actions = self.action_latent_decoder(z)
-        
-        # Reconstruction loss
-        if hasattr(self, 'discrete_action') and self.discrete_action:
-            # For discrete actions, use cross entropy loss
-            # Convert one-hot actions to indices
-            action_indices = actions.argmax(dim=-1)
-            reconstruction_loss = F.cross_entropy(
-                reconstructed_actions.view(-1, self.action_dim),
-                action_indices.view(-1).long()
-            )
-        else:
-            # For continuous actions, use MSE loss
-            reconstruction_loss = F.mse_loss(reconstructed_actions, actions)
-        
-        # KL divergence loss
-        kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-        return self.vae_weight * (reconstruction_loss + 0.1 * kl_loss)
-    
-    def pretrain_action_latent_encoder(self, x, actions, history_trajectory, cond, observations=None, 
-                                       rewards=None, next_observations=None, dones=None, returns=None, 
-                                       env_ts=None, attention_masks=None, **kwargs):
-        """Pretrain action latent encoder"""
-        actions = actions[:, -1, :, :].squeeze(1)  # [batch, n_agents, action_dim]
-        if self.discrete_action:
-            # Convert discrete actions to one-hot encoding
-            if actions.shape[-1] == 1:
-                # Actions are indices, convert to one-hot
-                action_indices = actions.squeeze(-1).long()  # [batch, n_agents]
-                action_indices = torch.clamp(action_indices, 0, self.action_dim - 1)
-                actions = F.one_hot(action_indices, num_classes=self.action_dim).float()  # [batch, n_agents, action_dim]
-        return self.compute_action_latent_loss(actions)

@@ -4,7 +4,7 @@ from ml_logger import logger
 from .training import Trainer
 
 
-class OfflineRLTrainer(Trainer):
+class CCRLTrainer(Trainer):
     """
     Trainer for offline reinforcement learning using diffusion models
     This trainer only uses static datasets without environment interaction
@@ -53,23 +53,6 @@ class OfflineRLTrainer(Trainer):
             if step_idx % self.target_update_freq == 0:
                 self.model.target_q_function.load_state_dict(self.model.q_function.state_dict())
         logger.print("Q-function pretraining completed")
-
-    def pretrain_action_latent_encoder(self, n_vae_steps, vae_lr):
-        self.vae_optimizer = torch.optim.Adam(
-            self.model.action_latent_encoder.parameters(), 
-            lr=vae_lr
-        )
-        """Pretrain action latent encoder"""
-        self.model.train()
-        for step_idx in range(n_vae_steps):
-            warmup_batch = next(self.dataloader)
-            warmup_batch = self.batch_to_device(warmup_batch)
-            vae_loss = self.model.pretrain_action_latent_encoder(**warmup_batch)
-            self.vae_optimizer.zero_grad()
-            vae_loss.backward()
-            self.vae_optimizer.step()
-            if step_idx % 100 == 0:
-                logger.print(f"VAE pretrain step {step_idx}/{n_vae_steps}, VAE loss: {vae_loss.item():.4f}")
 
     def train(self, n_train_steps):
         """Training loop for offline RL"""

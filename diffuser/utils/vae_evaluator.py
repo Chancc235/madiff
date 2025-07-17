@@ -10,7 +10,7 @@ from diffuser.utils.launcher_util import build_config_from_dict
 from diffuser.utils.arrays import to_device, to_np, to_torch
 import diffuser.utils as utils
 import gc
-
+from diffuser import *
 
 class VAEDiffusionEvaluator:
     """
@@ -162,12 +162,7 @@ class VAEDiffusionEvaluator:
         if Config.env_type == "smac" or Config.env_type == "smacv2":
             metrics_dict["win_rate"] = np.mean(episode_wins)
             
-        if self.verbose:
-            print("=" * 50)
-            print(f"Evaluation Results (Step {load_step}):")
-            for k, v in metrics_dict.items():
-                print(f"  {k}: {v}")
-            print("=" * 50)
+
             
         # Save results
         os.makedirs(os.path.join(self.log_dir, "results"), exist_ok=True)
@@ -266,8 +261,9 @@ class VAEDiffusionEvaluator:
                 else:
                     # Create minimal history using current observation and zero actions
                     minimal_history = np.zeros((max(history_horizon, 1), Config.n_agents, observation_dim + model_action_dim))
-                    # Fill the last timestep with current observation
+                    # Fill the last timestep with current observation and zero actions
                     minimal_history[-1, :, :observation_dim] = obs_normalized
+                    # Action part remains zero, which is reasonable for initialization
                     batch_history_trajectory.append(minimal_history)
             
             if not active_env_indices:
@@ -328,7 +324,14 @@ class VAEDiffusionEvaluator:
                 
                 # Execute action in environment
                 next_obs, reward, done, info = self.env_list[env_idx].step(actions)
-                episode_rewards[env_idx] += reward
+                
+                # Handle reward accumulation - ensure reward is properly added
+                if isinstance(reward, (int, float)):
+                    # If reward is scalar, add to all agents
+                    episode_rewards[env_idx] += np.full(Config.n_agents, reward)
+                else:
+                    # If reward is already an array, add directly
+                    episode_rewards[env_idx] += reward
                 
                 # Save current state for next step's history
                 prev_obs_list[env_idx] = obs[env_idx].copy()
@@ -338,8 +341,14 @@ class VAEDiffusionEvaluator:
                         actions_onehot = np.zeros((Config.n_agents, model_action_dim))
                         for agent_idx in range(Config.n_agents):
                             action_idx = actions[agent_idx]
+                            # Add boundary check to prevent index out of range
                             if 0 <= action_idx < model_action_dim:
                                 actions_onehot[agent_idx, action_idx] = 1.0
+                            else:
+                                # Handle invalid action index - use first action as fallback
+                                if self.verbose:
+                                    print(f"Warning: Invalid action index {action_idx} for agent {agent_idx}, using action 0")
+                                actions_onehot[agent_idx, 0] = 1.0
                         prev_actions_list[env_idx] = actions_onehot
                     else:
                         prev_actions_list[env_idx] = actions.copy()
@@ -350,12 +359,6 @@ class VAEDiffusionEvaluator:
                     dones[env_idx] = 1
                     if (Config.env_type == "smac" or Config.env_type == "smacv2") and "battle_won" in info:
                         episode_wins[env_idx] = info["battle_won"]
-                        
-                    if self.verbose:
-                        if Config.env_type == "smac" or Config.env_type == "smacv2":
-                            print(f"Episode {env_idx}: reward={episode_rewards[env_idx]}, win={episode_wins[env_idx] if Config.env_type in ['smac', 'smacv2'] else 'N/A'}")
-                        else:
-                            print(f"Episode {env_idx}: reward={episode_rewards[env_idx]}")
             
             step += 1
         

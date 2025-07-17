@@ -1,6 +1,6 @@
 meta_data:
-  exp_name: "dc_smac"
-  script_path: "run_scripts/train_dc.py"
+  exp_name: "cc_mamujoco_2ant"
+  script_path: "run_scripts/train_cc.py"
   num_workers: 1
 
 variables:
@@ -31,17 +31,17 @@ constants:
   job_name: "{dataset}/hh_{history_horizon}-bcw_{bc_weight}-qw_{q_weight}-pw_{policy_weight}-guidew_{condition_guidance_w}-lr_{learning_rate}-n_ddim_{n_ddim_steps}-{seed}"
   horizon: 1
   returns_scale: 20
-  env_type: "smac"
-  n_agents: 3
+  env_type: "mamujoco"
+  n_agents: 2
   use_action: True
-  discrete_action: True
+  discrete_action: False
   decentralized_execution: True
   use_zero_padding: True
   pred_future_padding: True
 
   # model - use DiffusionBackbone for testing
   model: "models.DiffusionBackbone"
-  diffusion: "models.OfflineDiffusionRL"
+  diffusion: "models.CCDiffusion"
   history_horizon: 30
   n_diffusion_steps: 30
   use_ddim_sample: True
@@ -53,8 +53,7 @@ constants:
   condition_dropout: 0.25
   condition_guidance_w: 2.0
   clip_denoised: True
-  renderer: "utils.SMACRenderer"
-
+  renderer: "utils.MAMuJoCoRenderer"
 
   trajectory_latent_dim: 128
   pattern_latent_dim: 128
@@ -77,12 +76,12 @@ constants:
   # dataset
   loader: "datasets.VAESequenceDataset"
   normalizer: "CDFNormalizer"
-  dataset: "3m-Good"
-  max_n_episodes: 50000
+  dataset: "2ant-Good"
+  max_n_episodes: 5000
   preprocess_fns: []
   use_padding: True
   discount: 0.95
-  max_path_length: 60
+  max_path_length: 1000
   termination_penalty: 0.0
   include_returns: true
   include_env_ts: true

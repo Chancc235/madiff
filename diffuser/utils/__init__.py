@@ -19,3 +19,4 @@ from .training import *
 from .timer import Timer
 from .cloud import sync_logs
 from .vae_evaluator import VAEDiffusionEvaluator
+from .cc_trainer import CCRLTrainer

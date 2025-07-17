@@ -120,7 +120,7 @@ def main(Config, RUN):
         savepath="model_config.pkl",
         n_agents=Config.n_agents,
         # For DiffusionBackbone, we need different parameters than TemporalUnet
-        action_dim=action_latent_dim,
+        action_dim=action_dim,
         trajectory_latent_dim=Config.trajectory_latent_dim,
         horizon=Config.horizon,
         hidden_dim=getattr(Config, 'backbone_hidden_dim', Config.hidden_dim),
@@ -167,9 +167,9 @@ def main(Config, RUN):
     )
 
     # Choose trainer based on diffusion type (offline only)
-    if Config.diffusion == "models.OfflineDiffusionRL":
-        trainer_class = utils.OfflineRLTrainer
-        logger.print("Using OfflineRLTrainer for offline RL training", color="blue")
+    if Config.diffusion == "models.CCDiffusion":
+        trainer_class = utils.CCRLTrainer
+        logger.print("Using CCRLTrainer for offline RL training", color="blue")
     else:
         trainer_class = utils.Trainer
         logger.print("Using standard Trainer for offline-only training", color="blue")
@@ -198,7 +198,7 @@ def main(Config, RUN):
     }
     
     # Add trainer-specific parameters
-    if trainer_class == utils.OfflineRLTrainer:
+    if trainer_class == utils.CCRLTrainer:
         # Offline RL-specific parameters
         trainer_params.update({
             "target_update_freq": getattr(Config, 'target_update_freq', 5),
@@ -220,7 +220,7 @@ def main(Config, RUN):
     model = model_config()
     
     # For OfflineDiffusionRL, we need to pass the model as the first argument
-    if Config.diffusion == "models.OfflineDiffusionRL":
+    if Config.diffusion == "models.CCDiffusion":
         # Create OfflineDiffusionRL with the model as the first argument
         diffusion = diffusion_config(model)
     else:
@@ -264,18 +264,6 @@ def main(Config, RUN):
 
     logger.print("Testing forward...", end=" ", flush=True)
     batch = utils.batchify(dataset[0], Config.device)
-    
-    
-    # -----------------------------------------------------------------------------#
-    # -------------------------------- VAE pretraining ----------------------------#
-    # -----------------------------------------------------------------------------#
-
-    # Pre-train VAE if supported
-    vae_steps = getattr(Config, 'vae_pretrain_steps', 2000)
-    vae_lr = getattr(Config, 'vae_learning_rate', 1e-3)
-    logger.print(f"Pre-training VAE for {vae_steps} steps with lr={vae_lr}")
-    trainer.pretrain_action_latent_encoder(n_vae_steps=vae_steps, vae_lr=vae_lr)
-    logger.print("VAE pre-training completed, starting main training...")
 
     # -----------------------------------------------------------------------------#
     # --------------------------------- main loop ---------------------------------#

@@ -13679,3 +13679,5 @@ third_party/StarCraftII/Battle.net/Cache/ff/e4/ffe4b5bc2cc640f34363e16bea287784c
 third_party/StarCraftII/Battle.net/Cache/ff/ed/ffed8343f0215e8069ed3de5b31fa0ff3ce866c02a3169ef051a066c35ad4ec4.s2ml
 third_party/StarCraftII/Battle.net/Cache/ff/f5/fff56c30601b47c60408bdb643998215d8fb6bb96b924978c0ef3c5283e10ec9.unlk
 third_party/StarCraftII/Battle.net/Cache/ff/f8/fff8707098ce6c0d2f6f9d10d300eeb49d5303612e2c4b10f34d589321105ea2.s2ml
+diffuser/patch.py
+diffuser/utils/patch.py
